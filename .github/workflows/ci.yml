@@ -35,17 +35,5 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q app.py src tests
 
-      - name: Test risk parity allocation
-        run: pytest -q tests/test_optimizer.py::test_risk_parity_equalizes_risk_contributions
-
-      - name: Test risk contribution reconciliation
-        run: pytest -q tests/test_optimizer.py::test_risk_contributions_sum_to_portfolio_volatility
-
-      - name: Test bounded short frontier
-        run: pytest -q tests/test_optimizer.py::test_short_frontier_respects_bounds_and_is_reproducible
-
-      - name: Test optimizer allocations
-        run: pytest -q tests/test_optimizer.py::test_optimizers_return_valid_allocations
-
-      - name: Test input validation
-        run: pytest -q tests/test_optimizer.py::test_invalid_frontier_size_is_rejected
+      - name: Run optimizer regression tests
+        run: pytest -q tests/test_optimizer.py
