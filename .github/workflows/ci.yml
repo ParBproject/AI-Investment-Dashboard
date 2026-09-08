@@ -35,8 +35,17 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q app.py src tests
 
-      - name: Test bounded short frontier
-        run: pytest -q tests/test_optimizer.py::test_short_frontier_respects_bounds_and_is_reproducible
+      - name: Test short-frontier reproducibility
+        run: pytest -q tests/test_optimizer.py::test_short_frontier_is_reproducible
+
+      - name: Test short-frontier net exposure
+        run: pytest -q tests/test_optimizer.py::test_short_frontier_weights_sum_to_one
+
+      - name: Test short-frontier asset bounds
+        run: pytest -q tests/test_optimizer.py::test_short_frontier_respects_asset_bounds
+
+      - name: Test short-frontier finite metrics
+        run: pytest -q tests/test_optimizer.py::test_short_frontier_metrics_are_finite
 
       - name: Test long-only reproducibility
         run: pytest -q tests/test_optimizer.py::test_long_only_frontier_is_reproducible
