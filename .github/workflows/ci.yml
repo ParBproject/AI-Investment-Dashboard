@@ -35,5 +35,17 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q app.py src tests
 
-      - name: Run optimizer regression tests
-        run: pytest -q tests/test_optimizer.py
+      - name: Test bounded short frontier
+        run: pytest -q tests/test_optimizer.py::test_short_frontier_respects_bounds_and_is_reproducible
+
+      - name: Test long-only reproducibility
+        run: pytest -q tests/test_optimizer.py::test_long_only_frontier_is_reproducible
+
+      - name: Test optimizer allocations
+        run: pytest -q tests/test_optimizer.py::test_optimizers_return_valid_allocations
+
+      - name: Test frontier size validation
+        run: pytest -q tests/test_optimizer.py::test_invalid_frontier_size_is_rejected
+
+      - name: Test non-finite input validation
+        run: pytest -q tests/test_optimizer.py::test_non_finite_returns_are_rejected
