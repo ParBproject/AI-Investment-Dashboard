@@ -104,23 +104,62 @@ def _portfolio_vol(
     return vol
 
 
-def _risk_parity_objective(
-    weights: np.ndarray,
+def _equal_risk_budget_weights(
     cov_matrix: np.ndarray,
-) -> float:
-    """Minimise dispersion between normalized asset-level risk contributions."""
-    contributions = portfolio_risk_contributions(
-        weights,
-        cov_matrix,
-        trading_days=1,
-    )
-    total_risk = contributions.sum()
-    if total_risk <= 1e-12:
-        return 1e6
+    tolerance: float = 1e-10,
+    max_iterations: int = 10_000,
+) -> np.ndarray:
+    """
+    Solve equal-risk budgeting with cyclical coordinate descent.
 
-    contribution_share = contributions / total_risk
-    target_share = np.full(len(weights), 1.0 / len(weights))
-    return float(np.sum((contribution_share - target_share) ** 2))
+    This avoids optimizer/version sensitivity in a tiny-scale SLSQP objective.
+    The first-order risk-budgeting condition can be solved one coordinate at a
+    time as a positive quadratic root. The final vector is normalized to sum to
+    one, which preserves the relative risk-contribution solution.
+    """
+    cov_matrix = np.asarray(cov_matrix, dtype=float)
+    n_assets = cov_matrix.shape[0]
+
+    # Sample covariance matrices are positive semidefinite, but tiny numerical
+    # negative eigenvalues can appear for highly collinear assets. Add the
+    # smallest possible diagonal shift before coordinate descent when needed.
+    min_eigenvalue = float(np.linalg.eigvalsh(cov_matrix).min())
+    if min_eigenvalue <= 0:
+        cov_matrix = cov_matrix + np.eye(n_assets) * (
+            abs(min_eigenvalue) + 1e-12
+        )
+
+    variances = np.diag(cov_matrix)
+    if np.any(variances <= 0):
+        raise ValueError("each asset must have positive return variance")
+
+    risk_budgets = np.full(n_assets, 1.0 / n_assets)
+    x = 1.0 / np.sqrt(variances)
+
+    for _ in range(max_iterations):
+        previous = x.copy()
+
+        for i in range(n_assets):
+            variance_i = cov_matrix[i, i]
+            cross_term = float(cov_matrix[i] @ x - variance_i * x[i])
+            discriminant = (
+                cross_term * cross_term
+                + 4.0 * variance_i * risk_budgets[i]
+            )
+            x[i] = (
+                -cross_term + np.sqrt(max(discriminant, 0.0))
+            ) / (2.0 * variance_i)
+            x[i] = max(x[i], 1e-14)
+
+        relative_change = np.max(
+            np.abs(x - previous) / (np.abs(previous) + 1e-12)
+        )
+        if relative_change < tolerance:
+            break
+    else:
+        raise RuntimeError("risk parity solver did not converge")
+
+    return x / x.sum()
 
 
 def _validate_returns(returns: pd.DataFrame) -> None:
@@ -279,25 +318,10 @@ def risk_parity_weights(
     """Find a long-only equal-risk-contribution (risk parity) portfolio."""
     _validate_returns(returns)
 
-    n = returns.shape[1]
     mean_returns = returns.mean().values
     cov_matrix = returns.cov().values
-    w0 = np.ones(n) / n
+    weights = _equal_risk_budget_weights(cov_matrix)
 
-    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
-    bounds = ((0.0, 1.0),) * n
-
-    result = minimize(
-        _risk_parity_objective,
-        w0,
-        args=(cov_matrix,),
-        method="SLSQP",
-        bounds=bounds,
-        constraints=constraints,
-        options={"ftol": 1e-12, "maxiter": 2000},
-    )
-
-    weights = result.x if result.success else w0
     ann_ret, ann_vol = compute_portfolio_metrics(
         weights,
         mean_returns,
