@@ -11,7 +11,6 @@ from src.optimizer import (
 
 @pytest.fixture
 def sample_returns() -> pd.DataFrame:
-    """Deterministic synthetic returns with deliberately different volatilities."""
     rng = np.random.default_rng(42)
     return pd.DataFrame(
         {
@@ -22,29 +21,37 @@ def sample_returns() -> pd.DataFrame:
     )
 
 
-def test_short_frontier_respects_bounds_and_is_reproducible(
-    sample_returns: pd.DataFrame,
-) -> None:
-    first = efficient_frontier(
-        sample_returns,
-        n_portfolios=250,
-        allow_short=True,
-        random_state=7,
-    )
-    second = efficient_frontier(
+def _short_frontier(sample_returns: pd.DataFrame) -> dict:
+    return efficient_frontier(
         sample_returns,
         n_portfolios=250,
         allow_short=True,
         random_state=7,
     )
 
+
+def test_short_frontier_is_reproducible(sample_returns: pd.DataFrame) -> None:
+    first = _short_frontier(sample_returns)
+    second = _short_frontier(sample_returns)
     assert np.allclose(first["weights"], second["weights"])
-    assert np.allclose(first["weights"].sum(axis=1), 1.0, atol=1e-10)
-    assert first["weights"].min() >= -1.0 - 1e-10
-    assert first["weights"].max() <= 1.0 + 1e-10
-    assert np.isfinite(first["rets"]).all()
-    assert np.isfinite(first["vols"]).all()
-    assert np.isfinite(first["sharpes"]).all()
+
+
+def test_short_frontier_weights_sum_to_one(sample_returns: pd.DataFrame) -> None:
+    frontier = _short_frontier(sample_returns)
+    assert np.allclose(frontier["weights"].sum(axis=1), 1.0, atol=1e-10)
+
+
+def test_short_frontier_respects_asset_bounds(sample_returns: pd.DataFrame) -> None:
+    frontier = _short_frontier(sample_returns)
+    assert frontier["weights"].min() >= -1.0 - 1e-10
+    assert frontier["weights"].max() <= 1.0 + 1e-10
+
+
+def test_short_frontier_metrics_are_finite(sample_returns: pd.DataFrame) -> None:
+    frontier = _short_frontier(sample_returns)
+    assert np.isfinite(frontier["rets"]).all()
+    assert np.isfinite(frontier["vols"]).all()
+    assert np.isfinite(frontier["sharpes"]).all()
 
 
 def test_long_only_frontier_is_reproducible(sample_returns: pd.DataFrame) -> None:
