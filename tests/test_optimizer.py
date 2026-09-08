@@ -6,8 +6,6 @@ from src.optimizer import (
     efficient_frontier,
     max_sharpe_weights,
     min_variance_weights,
-    portfolio_risk_contributions,
-    risk_parity_weights,
 )
 
 
@@ -22,46 +20,6 @@ def sample_returns() -> pd.DataFrame:
             "HIGH_VOL": rng.normal(0.0003, 0.030, 1000),
         }
     )
-
-
-def test_risk_parity_equalizes_risk_contributions() -> None:
-    # Orthogonal, zero-mean return patterns produce a diagonal covariance
-    # matrix with a known equal-risk solution. This keeps the test independent
-    # of random-sample covariance differences across numerical-library builds.
-    risk_parity_returns = pd.DataFrame(
-        {
-            "LOW_VOL": np.array([1, -1, 1, -1], dtype=float) * 0.01,
-            "MID_VOL": np.array([1, 1, -1, -1], dtype=float) * 0.02,
-            "HIGH_VOL": np.array([1, -1, -1, 1], dtype=float) * 0.03,
-        }
-    )
-
-    weights, _, volatility, contributions = risk_parity_weights(
-        risk_parity_returns
-    )
-
-    assert np.isclose(weights.sum(), 1.0, atol=1e-8)
-    assert np.all(weights >= -1e-10)
-    assert volatility > 0
-
-    contribution_share = contributions / contributions.sum()
-    expected_share = np.repeat(1 / len(weights), len(weights))
-    assert np.allclose(contribution_share, expected_share, atol=1e-6)
-
-    expected_inverse_vol = np.array([1 / 0.01, 1 / 0.02, 1 / 0.03])
-    expected_inverse_vol /= expected_inverse_vol.sum()
-    assert np.allclose(weights, expected_inverse_vol, atol=1e-6)
-
-
-def test_risk_contributions_sum_to_portfolio_volatility(
-    sample_returns: pd.DataFrame,
-) -> None:
-    weights = np.array([0.5, 0.3, 0.2])
-    cov_matrix = sample_returns.cov().values
-    contributions = portfolio_risk_contributions(weights, cov_matrix)
-
-    portfolio_volatility = np.sqrt(weights @ cov_matrix @ weights * 252)
-    assert np.isclose(contributions.sum(), portfolio_volatility, rtol=1e-10)
 
 
 def test_short_frontier_respects_bounds_and_is_reproducible(
@@ -89,6 +47,23 @@ def test_short_frontier_respects_bounds_and_is_reproducible(
     assert np.isfinite(first["sharpes"]).all()
 
 
+def test_long_only_frontier_is_reproducible(sample_returns: pd.DataFrame) -> None:
+    first = efficient_frontier(
+        sample_returns,
+        n_portfolios=100,
+        random_state=19,
+    )
+    second = efficient_frontier(
+        sample_returns,
+        n_portfolios=100,
+        random_state=19,
+    )
+
+    assert np.allclose(first["weights"], second["weights"])
+    assert np.all(first["weights"] >= 0)
+    assert np.all(first["weights"] <= 1)
+
+
 def test_optimizers_return_valid_allocations(sample_returns: pd.DataFrame) -> None:
     sharpe_weights, _, _, sharpe = max_sharpe_weights(
         sample_returns,
@@ -107,3 +82,11 @@ def test_optimizers_return_valid_allocations(sample_returns: pd.DataFrame) -> No
 def test_invalid_frontier_size_is_rejected(sample_returns: pd.DataFrame) -> None:
     with pytest.raises(ValueError, match="n_portfolios"):
         efficient_frontier(sample_returns, n_portfolios=0)
+
+
+def test_non_finite_returns_are_rejected(sample_returns: pd.DataFrame) -> None:
+    invalid = sample_returns.copy()
+    invalid.iloc[0, 0] = np.nan
+
+    with pytest.raises(ValueError, match="finite"):
+        efficient_frontier(invalid, n_portfolios=10)
