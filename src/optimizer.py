@@ -1,17 +1,14 @@
 """
 optimizer.py
 ============
-Portfolio optimization utilities for the investment dashboard.
+Mean-variance portfolio optimization utilities.
 
-Implements Markowitz mean-variance optimization, Monte Carlo efficient-frontier
-sampling, maximum-Sharpe portfolios, minimum-variance portfolios, and an
-equal-risk-contribution (risk parity) allocation.
+Implements Markowitz efficient-frontier simulation, maximum-Sharpe allocation,
+and minimum-variance allocation with bounded short-selling support.
 
 References
 ----------
 - Markowitz, H. (1952). Portfolio Selection. Journal of Finance.
-- Maillard, S., Roncalli, T., & Teiletche, J. (2010). The Properties of
-  Equally Weighted Risk Contribution Portfolios.
 """
 
 from typing import Optional
@@ -34,33 +31,25 @@ def compute_portfolio_metrics(
     """Compute annualised portfolio return and volatility."""
     port_return = np.dot(weights, mean_returns) * trading_days
     port_variance = np.dot(weights, np.dot(cov_matrix, weights))
+    # Ill-conditioned covariance matrices can produce a tiny negative value
+    # from floating-point noise even though variance is non-negative.
     port_vol = np.sqrt(max(float(port_variance), 0.0) * trading_days)
     return float(port_return), float(port_vol)
-
-
-def portfolio_risk_contributions(
-    weights: np.ndarray,
-    cov_matrix: np.ndarray,
-    trading_days: int = 252,
-) -> np.ndarray:
-    """Return each asset's contribution to total portfolio volatility."""
-    weights = np.asarray(weights, dtype=float)
-    cov_matrix = np.asarray(cov_matrix, dtype=float)
-
-    variance = float(weights @ cov_matrix @ weights)
-    if variance <= 1e-20:
-        return np.zeros_like(weights)
-
-    portfolio_vol = np.sqrt(variance * trading_days)
-    marginal_risk = (cov_matrix @ weights) * trading_days / portfolio_vol
-    return weights * marginal_risk
 
 
 def _sample_bounded_short_weights(
     n_assets: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Sample sum-to-one weights while respecting per-asset [-1, 1] bounds."""
+    """
+    Sample weights that sum to one while respecting per-asset [-1, 1] bounds.
+
+    The previous implementation normalized a random vector by gross exposure
+    and then normalized it again by net exposure. When net exposure was close
+    to zero, the second division could create extremely large weights and
+    unrealistic leverage. This sampler moves from equal weight along a zero-sum
+    random direction and caps the step before any asset crosses its bound.
+    """
     base = np.ones(n_assets) / n_assets
     if n_assets == 1:
         return base
@@ -104,64 +93,6 @@ def _portfolio_vol(
     return vol
 
 
-def _equal_risk_budget_weights(
-    cov_matrix: np.ndarray,
-    tolerance: float = 1e-10,
-    max_iterations: int = 10_000,
-) -> np.ndarray:
-    """
-    Solve equal-risk budgeting with cyclical coordinate descent.
-
-    This avoids optimizer/version sensitivity in a tiny-scale SLSQP objective.
-    The first-order risk-budgeting condition can be solved one coordinate at a
-    time as a positive quadratic root. The final vector is normalized to sum to
-    one, which preserves the relative risk-contribution solution.
-    """
-    cov_matrix = np.asarray(cov_matrix, dtype=float)
-    n_assets = cov_matrix.shape[0]
-
-    # Sample covariance matrices are positive semidefinite, but tiny numerical
-    # negative eigenvalues can appear for highly collinear assets. Add the
-    # smallest possible diagonal shift before coordinate descent when needed.
-    min_eigenvalue = float(np.linalg.eigvalsh(cov_matrix).min())
-    if min_eigenvalue <= 0:
-        cov_matrix = cov_matrix + np.eye(n_assets) * (
-            abs(min_eigenvalue) + 1e-12
-        )
-
-    variances = np.diag(cov_matrix)
-    if np.any(variances <= 0):
-        raise ValueError("each asset must have positive return variance")
-
-    risk_budgets = np.full(n_assets, 1.0 / n_assets)
-    x = 1.0 / np.sqrt(variances)
-
-    for _ in range(max_iterations):
-        previous = x.copy()
-
-        for i in range(n_assets):
-            variance_i = cov_matrix[i, i]
-            cross_term = float(cov_matrix[i] @ x - variance_i * x[i])
-            discriminant = (
-                cross_term * cross_term
-                + 4.0 * variance_i * risk_budgets[i]
-            )
-            x[i] = (
-                -cross_term + np.sqrt(max(discriminant, 0.0))
-            ) / (2.0 * variance_i)
-            x[i] = max(x[i], 1e-14)
-
-        relative_change = np.max(
-            np.abs(x - previous) / (np.abs(previous) + 1e-12)
-        )
-        if relative_change < tolerance:
-            break
-    else:
-        raise RuntimeError("risk parity solver did not converge")
-
-    return x / x.sum()
-
-
 def _validate_returns(returns: pd.DataFrame) -> None:
     """Validate the minimum shape and numeric quality required by optimizers."""
     if returns.shape[1] == 0:
@@ -182,7 +113,12 @@ def max_sharpe_weights(
     allow_short: bool = False,
     random_state: Optional[int] = None,
 ) -> tuple[np.ndarray, float, float, float]:
-    """Find portfolio weights that maximise the Sharpe ratio."""
+    """
+    Find portfolio weights that maximise the Sharpe ratio.
+
+    ``random_state`` makes the multi-start search reproducible for tests,
+    notebooks, and demonstrations while preserving stochastic defaults.
+    """
     _validate_returns(returns)
 
     n = returns.shape[1]
@@ -237,7 +173,13 @@ def efficient_frontier(
     allow_short: bool = False,
     random_state: Optional[int] = None,
 ) -> dict:
-    """Generate random portfolio points to approximate the efficient frontier."""
+    """
+    Generate random portfolio points to approximate the efficient frontier.
+
+    Short-enabled simulations now use the same [-1, 1] per-asset bounds as the
+    optimizer instead of producing accidental high-leverage outliers.
+    ``random_state`` allows deterministic simulations when desired.
+    """
     _validate_returns(returns)
     if n_portfolios < 1:
         raise ValueError("n_portfolios must be at least 1")
@@ -310,22 +252,3 @@ def min_variance_weights(
         cov_matrix,
     )
     return weights, ann_ret, ann_vol
-
-
-def risk_parity_weights(
-    returns: pd.DataFrame,
-) -> tuple[np.ndarray, float, float, np.ndarray]:
-    """Find a long-only equal-risk-contribution (risk parity) portfolio."""
-    _validate_returns(returns)
-
-    mean_returns = returns.mean().values
-    cov_matrix = returns.cov().values
-    weights = _equal_risk_budget_weights(cov_matrix)
-
-    ann_ret, ann_vol = compute_portfolio_metrics(
-        weights,
-        mean_returns,
-        cov_matrix,
-    )
-    contributions = portfolio_risk_contributions(weights, cov_matrix)
-    return weights, ann_ret, ann_vol, contributions
