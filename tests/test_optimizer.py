@@ -24,8 +24,21 @@ def sample_returns() -> pd.DataFrame:
     )
 
 
-def test_risk_parity_equalizes_risk_contributions(sample_returns: pd.DataFrame) -> None:
-    weights, _, volatility, contributions = risk_parity_weights(sample_returns)
+def test_risk_parity_equalizes_risk_contributions() -> None:
+    # Orthogonal, zero-mean return patterns produce a diagonal covariance
+    # matrix with a known equal-risk solution. This keeps the test independent
+    # of random-sample covariance differences across numerical-library builds.
+    risk_parity_returns = pd.DataFrame(
+        {
+            "LOW_VOL": np.array([1, -1, 1, -1], dtype=float) * 0.01,
+            "MID_VOL": np.array([1, 1, -1, -1], dtype=float) * 0.02,
+            "HIGH_VOL": np.array([1, -1, -1, 1], dtype=float) * 0.03,
+        }
+    )
+
+    weights, _, volatility, contributions = risk_parity_weights(
+        risk_parity_returns
+    )
 
     assert np.isclose(weights.sum(), 1.0, atol=1e-8)
     assert np.all(weights >= -1e-10)
@@ -33,7 +46,11 @@ def test_risk_parity_equalizes_risk_contributions(sample_returns: pd.DataFrame) 
 
     contribution_share = contributions / contributions.sum()
     expected_share = np.repeat(1 / len(weights), len(weights))
-    assert np.allclose(contribution_share, expected_share, atol=5e-3)
+    assert np.allclose(contribution_share, expected_share, atol=1e-6)
+
+    expected_inverse_vol = np.array([1 / 0.01, 1 / 0.02, 1 / 0.03])
+    expected_inverse_vol /= expected_inverse_vol.sum()
+    assert np.allclose(weights, expected_inverse_vol, atol=1e-6)
 
 
 def test_risk_contributions_sum_to_portfolio_volatility(
