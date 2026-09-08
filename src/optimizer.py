@@ -34,8 +34,6 @@ def compute_portfolio_metrics(
     """Compute annualised portfolio return and volatility."""
     port_return = np.dot(weights, mean_returns) * trading_days
     port_variance = np.dot(weights, np.dot(cov_matrix, weights))
-    # Numerical noise can make a theoretically non-negative variance slightly
-    # negative for ill-conditioned covariance matrices.
     port_vol = np.sqrt(max(float(port_variance), 0.0) * trading_days)
     return float(port_return), float(port_vol)
 
@@ -45,13 +43,7 @@ def portfolio_risk_contributions(
     cov_matrix: np.ndarray,
     trading_days: int = 252,
 ) -> np.ndarray:
-    """
-    Return each asset's contribution to total portfolio volatility.
-
-    Risk contributions sum to the portfolio's annualised volatility, making the
-    result directly useful for diagnosing concentration that is not obvious from
-    capital weights alone.
-    """
+    """Return each asset's contribution to total portfolio volatility."""
     weights = np.asarray(weights, dtype=float)
     cov_matrix = np.asarray(cov_matrix, dtype=float)
 
@@ -68,15 +60,7 @@ def _sample_bounded_short_weights(
     n_assets: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """
-    Sample weights that sum to one while respecting the [-1, 1] short bounds.
-
-    The previous implementation normalised a random vector twice. When the
-    vector's net exposure was close to zero, the second normalisation could
-    create extremely large weights and unrealistic leverage. This sampler moves
-    from equal weight along a zero-sum random direction and caps the step before
-    any asset can cross the configured optimizer bounds.
-    """
+    """Sample sum-to-one weights while respecting per-asset [-1, 1] bounds."""
     base = np.ones(n_assets) / n_assets
     if n_assets == 1:
         return base
@@ -124,7 +108,7 @@ def _risk_parity_objective(
     weights: np.ndarray,
     cov_matrix: np.ndarray,
 ) -> float:
-    """Minimise dispersion between asset-level volatility contributions."""
+    """Minimise dispersion between normalized asset-level risk contributions."""
     contributions = portfolio_risk_contributions(
         weights,
         cov_matrix,
@@ -134,8 +118,9 @@ def _risk_parity_objective(
     if total_risk <= 1e-12:
         return 1e6
 
-    target = total_risk / len(weights)
-    return float(np.sum((contributions - target) ** 2))
+    contribution_share = contributions / total_risk
+    target_share = np.full(len(weights), 1.0 / len(weights))
+    return float(np.sum((contribution_share - target_share) ** 2))
 
 
 def _validate_returns(returns: pd.DataFrame) -> None:
@@ -158,12 +143,7 @@ def max_sharpe_weights(
     allow_short: bool = False,
     random_state: Optional[int] = None,
 ) -> tuple[np.ndarray, float, float, float]:
-    """
-    Find portfolio weights that maximise the Sharpe ratio.
-
-    ``random_state`` makes the multi-start optimisation reproducible for tests,
-    demos, and research notebooks without changing the default behaviour.
-    """
+    """Find portfolio weights that maximise the Sharpe ratio."""
     _validate_returns(returns)
 
     n = returns.shape[1]
@@ -218,13 +198,7 @@ def efficient_frontier(
     allow_short: bool = False,
     random_state: Optional[int] = None,
 ) -> dict:
-    """
-    Generate random portfolio points to approximate the efficient frontier.
-
-    When short selling is enabled, sampled portfolios now respect the same
-    [-1, 1] per-asset bounds used by the optimizer instead of creating accidental
-    high-leverage outliers. ``random_state`` enables reproducible simulations.
-    """
+    """Generate random portfolio points to approximate the efficient frontier."""
     _validate_returns(returns)
     if n_portfolios < 1:
         raise ValueError("n_portfolios must be at least 1")
@@ -302,17 +276,7 @@ def min_variance_weights(
 def risk_parity_weights(
     returns: pd.DataFrame,
 ) -> tuple[np.ndarray, float, float, np.ndarray]:
-    """
-    Find a long-only equal-risk-contribution (risk parity) portfolio.
-
-    Unlike equal capital weights, risk parity targets the same contribution to
-    total portfolio volatility from each asset. The returned risk-contribution
-    vector makes the allocation auditable in the dashboard or notebooks.
-
-    Returns
-    -------
-    (weights, annual_return, annual_volatility, risk_contributions)
-    """
+    """Find a long-only equal-risk-contribution (risk parity) portfolio."""
     _validate_returns(returns)
 
     n = returns.shape[1]
