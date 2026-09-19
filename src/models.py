@@ -92,6 +92,7 @@ def monte_carlo_paths(
     n_paths: int = 1000,
     horizon: int = 252,
     initial_value: float = 1.0,
+    seed: Optional[int] = 42,
 ) -> np.ndarray:
     """
     Generate Monte Carlo simulation paths using historical return statistics.
@@ -117,8 +118,9 @@ def monte_carlo_paths(
     mu = returns.mean()
     sigma = returns.std()
 
-    # Draw random shocks: shape (horizon, n_paths)
-    shocks = np.random.normal(mu, sigma, (horizon, n_paths))
+    # Draw reproducible random shocks: shape (horizon, n_paths)
+    rng = np.random.default_rng(seed)
+    shocks = rng.normal(mu, sigma, (horizon, n_paths))
 
     # Compute cumulative returns
     paths = np.zeros((horizon + 1, n_paths))
