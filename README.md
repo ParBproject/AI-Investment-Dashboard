@@ -28,6 +28,27 @@ The project is designed to demonstrate both **Quantitative Specialist** and **Da
 
 ## Research workbenches
 
+### Platform architecture
+
+```mermaid
+flowchart LR
+    A[Historical Market Data] --> B[Portfolio Optimizer]
+    A --> C[Market Risk]
+    B --> D[Monte Carlo Portfolio Risk]
+    E[Option Inputs] --> F[Black-Scholes + Greeks]
+    E --> G[CRR Binomial Tree]
+    E --> H[Risk-Neutral Monte Carlo]
+    F --> I[Cross-Method Validation]
+    G --> I
+    H --> I
+    A --> J[GMM Regime Scenarios]
+    C --> K[Investment Research Lab]
+    D --> K
+    I --> K
+    J --> K
+```
+
+
 The redesigned application is divided into six focused research areas:
 
 **Market Overview**  
