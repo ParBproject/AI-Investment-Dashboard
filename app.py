@@ -1,552 +1,1052 @@
-"""
-AI-Driven Investment Dashboard
-================================
-A comprehensive Streamlit web application combining portfolio optimization,
-Black-Scholes option pricing, Monte Carlo simulations, and AI-driven
-"what-if" scenario generation.
+"""Professional quantitative investment research dashboard."""
 
-⚠️ DISCLAIMER: For educational/simulation purposes only. Not financial advice.
-Backtest results do not guarantee future performance.
-"""
+from __future__ import annotations
 
-import streamlit as st
-import pandas as pd
+from datetime import date
+
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import warnings
+import streamlit as st
 
-warnings.filterwarnings("ignore")
+from src.data_loader import fetch_price_data, load_csv_prices
+from src.derivatives import (
+    black_scholes_price,
+    compare_option_pricers,
+    implied_volatility,
+    put_call_parity_gap,
+)
+from src.models import (
+    black_scholes,
+    gmm_scenario_returns,
+    max_drawdown,
+    monte_carlo_paths,
+    var_cvar,
+)
+from src.optimizer import (
+    efficient_frontier,
+    max_sharpe_weights,
+    min_variance_weights,
+)
+from src.utils import (
+    correlation_heatmap,
+    format_dollar,
+    format_pct,
+    returns_histogram,
+    weights_pie_chart,
+)
 
-# ── Page config ────────────────────────────────────────────────────────────────
+
+NAVY = "#0F172A"
+TEAL = "#0F766E"
+CYAN = "#38BDF8"
+ROSE = "#E11D48"
+SLATE = "#64748B"
+GRID = "#E2E8F0"
+
+
 st.set_page_config(
-    page_title="AI Investment Dashboard",
-    page_icon="📈",
+    page_title="Quant Investment Research Lab",
+    page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Lazy imports (heavy libs loaded only when needed) ──────────────────────────
-@st.cache_resource
-def load_heavy_libs():
-    import yfinance as yf
-    from scipy.optimize import minimize
-    from scipy.stats import norm
-    from sklearn.mixture import GaussianMixture
-    return yf, minimize, norm, GaussianMixture
-
-# ── Module imports ─────────────────────────────────────────────────────────────
-from src.data_loader import fetch_price_data, load_csv_prices
-from src.optimizer import (
-    compute_portfolio_metrics,
-    efficient_frontier,
-    max_sharpe_weights,
+st.markdown(
+    """
+    <style>
+    .stApp { background: #F8FAFC; }
+    .block-container {
+        max-width: 1480px;
+        padding-top: 1.35rem;
+        padding-bottom: 3rem;
+    }
+    .hero {
+        padding: 2.05rem 2.25rem;
+        border-radius: 22px;
+        background:
+            radial-gradient(circle at 88% 12%, rgba(56,189,248,.22), transparent 31%),
+            linear-gradient(135deg, #0F172A 0%, #172554 58%, #0F766E 125%);
+        color: white;
+        box-shadow: 0 18px 48px rgba(15,23,42,.15);
+        margin-bottom: 1.1rem;
+    }
+    .hero-kicker {
+        font-size: .78rem;
+        letter-spacing: .16em;
+        text-transform: uppercase;
+        color: #99F6E4;
+        font-weight: 750;
+        margin-bottom: .55rem;
+    }
+    .hero h1 {
+        margin: 0;
+        font-size: 2.3rem;
+        line-height: 1.08;
+        letter-spacing: -.035em;
+    }
+    .hero p {
+        margin: .8rem 0 0;
+        max-width: 900px;
+        color: #DCE7F4;
+        font-size: 1rem;
+        line-height: 1.65;
+    }
+    .signal-card {
+        padding: 1rem 1.08rem;
+        background: white;
+        border: 1px solid #E2E8F0;
+        border-radius: 16px;
+        min-height: 104px;
+        box-shadow: 0 5px 18px rgba(15,23,42,.04);
+    }
+    .signal-label {
+        color: #64748B;
+        font-size: .75rem;
+        text-transform: uppercase;
+        letter-spacing: .09em;
+        font-weight: 750;
+    }
+    .signal-value {
+        color: #0F172A;
+        font-size: 1.45rem;
+        font-weight: 760;
+        margin-top: .28rem;
+    }
+    .signal-note {
+        color: #64748B;
+        font-size: .79rem;
+        margin-top: .18rem;
+    }
+    .method-box {
+        background: white;
+        border: 1px solid #E2E8F0;
+        border-radius: 18px;
+        padding: 1.1rem 1.25rem;
+        margin-bottom: .8rem;
+        line-height: 1.55;
+    }
+    div[data-testid="stMetric"] {
+        background: white;
+        border: 1px solid #E2E8F0;
+        border-radius: 15px;
+        padding: .85rem 1rem;
+        box-shadow: 0 4px 14px rgba(15,23,42,.035);
+    }
+    section[data-testid="stSidebar"] {
+        background: #F1F5F9;
+        border-right: 1px solid #E2E8F0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
-from src.models import (
-    black_scholes,
-    monte_carlo_paths,
-    var_cvar,
-    gmm_scenario_returns,
-)
-from src.utils import (
-    format_pct,
-    weights_pie_chart,
-    correlation_heatmap,
-    returns_histogram,
-)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SIDEBAR
-# ═══════════════════════════════════════════════════════════════════════════════
-with st.sidebar:
-    st.image("https://via.placeholder.com/260x60?text=AI+Investment+Dashboard",
-             use_column_width=True)
-    st.markdown("---")
-    st.header("⚙️ Configuration")
 
-    input_mode = st.radio("Data Source", ["Ticker Symbols", "Upload CSV"],
-                          horizontal=True)
+def signal_card(label: str, value: str, note: str) -> None:
+    st.markdown(
+        f"""
+        <div class="signal-card">
+          <div class="signal-label">{label}</div>
+          <div class="signal-value">{value}</div>
+          <div class="signal-note">{note}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if input_mode == "Ticker Symbols":
-        tickers_raw = st.text_input(
-            "Tickers (comma-separated)",
-            value="AAPL, MSFT, GOOGL, AMZN, TSLA",
+
+def line_chart(
+    frame: pd.DataFrame,
+    *,
+    title: str,
+    y_title: str,
+    height: int = 420,
+) -> go.Figure:
+    colors = [NAVY, TEAL, CYAN, "#2563EB", "#7C3AED", ROSE, "#F59E0B"]
+    fig = go.Figure()
+    for index, column in enumerate(frame.columns):
+        fig.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=frame[column],
+                mode="lines",
+                name=str(column),
+                line={"width": 2.3, "color": colors[index % len(colors)]},
+            )
         )
-        tickers = [t.strip().upper() for t in tickers_raw.split(",") if t.strip()]
+    fig.update_layout(
+        title={"text": title, "x": 0.02, "xanchor": "left"},
+        height=height,
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font={"family": "Inter, Arial, sans-serif", "color": NAVY},
+        xaxis={"title": "", "gridcolor": GRID},
+        yaxis={"title": y_title, "gridcolor": GRID},
+        legend={"orientation": "h", "y": -0.15},
+        margin={"l": 55, "r": 25, "t": 65, "b": 65},
+    )
+    return fig
+
+
+st.markdown(
+    """
+    <div class="hero">
+      <div class="hero-kicker">Quantitative Investment Research</div>
+      <h1>Investment Research Lab</h1>
+      <p>
+        Real-market portfolio analytics, optimization, tail-risk simulation,
+        multi-method derivatives pricing, implied volatility, and regime-aware
+        stress scenarios in one reproducible research interface.
+      </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+with st.sidebar:
+    st.markdown("### Research configuration")
+    input_mode = st.radio(
+        "Data source",
+        ["Ticker symbols", "Upload CSV"],
+        horizontal=True,
+    )
+
+    uploaded = None
+    if input_mode == "Ticker symbols":
+        tickers_raw = st.text_input(
+            "Asset universe",
+            value="AAPL, MSFT, GOOGL, AMZN, SPY",
+        )
+        tickers = [
+            ticker.strip().upper()
+            for ticker in tickers_raw.split(",")
+            if ticker.strip()
+        ]
     else:
-        uploaded = st.file_uploader("Upload CSV (Date index, ticker columns)",
-                                    type=["csv"])
+        uploaded = st.file_uploader(
+            "Upload price CSV",
+            type=["csv"],
+            help="First column: date. Remaining columns: adjusted prices.",
+        )
         tickers = []
 
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Start Date",
-                                   value=pd.Timestamp("2021-01-01"))
-    with col2:
-        end_date = st.date_input("End Date",
-                                 value=pd.Timestamp("2024-12-31"))
+    start_date = st.date_input("History start", value=date(2021, 1, 1))
+    end_date = st.date_input("History end", value=date.today())
 
-    risk_free_rate = st.number_input("Risk-Free Rate (annual, %)", value=4.5,
-                                     step=0.1) / 100
-    allow_short = st.checkbox("Allow Short Selling", value=False)
-    n_portfolios = st.slider("Frontier Portfolios", 100, 2000, 500, step=100)
+    st.divider()
+    st.markdown("#### Portfolio")
+    risk_free_rate = st.slider(
+        "Risk-free rate",
+        0.0,
+        8.0,
+        4.0,
+        0.25,
+    ) / 100.0
+    allow_short = st.checkbox("Allow bounded short selling", value=False)
+    n_portfolios = st.slider(
+        "Opportunity-set simulations",
+        250,
+        5000,
+        1250,
+        250,
+    )
 
-    st.markdown("---")
-    st.subheader("🎯 What-If Scenario")
-    shock_pct = st.slider("Market Shock (%)", -50, 50, -20)
-    rate_hike = st.slider("Interest Rate Change (bps)", -200, 200, 100)
-    n_mc_paths = st.slider("Monte Carlo Paths", 500, 5000, 1000, step=500)
+    st.divider()
+    st.markdown("#### Risk simulation")
+    n_mc_paths = st.slider("Monte Carlo paths", 1000, 10000, 3000, 500)
+    mc_horizon = st.slider("Risk horizon (trading days)", 63, 504, 252, 21)
 
-    st.markdown("---")
-    st.subheader("🔮 Options Pricing")
-    opt_spot = st.number_input("Spot Price (S)", value=150.0)
-    opt_strike = st.number_input("Strike Price (K)", value=155.0)
-    opt_maturity = st.number_input("Maturity (years, T)", value=0.5,
-                                   step=0.25)
-    opt_vol = st.number_input("Volatility (σ, %)", value=25.0) / 100
-    opt_r = st.number_input("Risk-Free Rate for Option (%)",
-                            value=4.5) / 100
+    st.divider()
+    st.markdown("#### Derivatives")
+    option_type = st.selectbox("Option type", ["call", "put"])
+    opt_spot = st.number_input("Spot price", min_value=0.01, value=150.0, step=1.0)
+    opt_strike = st.number_input("Strike price", min_value=0.01, value=155.0, step=1.0)
+    opt_maturity = st.number_input(
+        "Maturity (years)",
+        min_value=0.01,
+        value=0.50,
+        step=0.05,
+    )
+    opt_vol = st.number_input(
+        "Volatility (%)",
+        min_value=0.01,
+        value=25.0,
+        step=1.0,
+    ) / 100.0
+    opt_rate = st.number_input(
+        "Option risk-free rate (%)",
+        value=4.0,
+        step=0.25,
+    ) / 100.0
+    observed_option_price = st.number_input(
+        "Observed market option price (0 = skip IV)",
+        min_value=0.0,
+        value=0.0,
+        step=0.25,
+    )
+    binomial_steps = st.slider("Binomial tree steps", 50, 1000, 400, 50)
+    option_mc_paths = st.slider(
+        "Option Monte Carlo paths",
+        5000,
+        150000,
+        50000,
+        5000,
+    )
 
-    run_btn = st.button("🚀 Run Analysis", type="primary",
-                        use_container_width=True)
+    st.divider()
+    st.markdown("#### Regime scenario")
+    shock_pct = st.slider("One-time market shock", -50, 20, -20) / 100.0
+    rate_hike_bps = st.slider("Rate shock (bps)", -200, 300, 100)
+    scenario_paths = st.slider("Scenario paths", 500, 5000, 1500, 500)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  HEADER
-# ═══════════════════════════════════════════════════════════════════════════════
-st.title("📈 AI-Driven Investment Dashboard")
-st.caption(
-    "Portfolio Optimization · Monte Carlo · Black-Scholes · "
-    "AI Scenario Generation  |  ⚠️ Educational use only"
-)
-
-# Tabs
-tabs = st.tabs([
-    "🏠 Overview",
-    "📊 Portfolio Optimizer",
-    "🎲 Monte Carlo & Risk",
-    "🔮 Options Pricing",
-    "🤖 AI What-If Scenarios",
-])
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  DATA LOADING
-# ═══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=3600)
-def load_data(tickers, start, end):
-    return fetch_price_data(tickers, str(start), str(end))
+    run_btn = st.button(
+        "Run research suite",
+        type="primary",
+        use_container_width=True,
+    )
 
 
 if not run_btn:
-    with tabs[0]:
-        st.info("👈 Configure your portfolio in the sidebar, then click **Run Analysis**.")
-        st.markdown("""
-        ### Features
-        | Module | Description |
-        |--------|-------------|
-        | **Portfolio Optimizer** | Mean-variance optimization, Efficient Frontier, Max-Sharpe weights |
-        | **Monte Carlo & Risk** | Simulated price paths, VaR/CVaR, drawdown analysis |
-        | **Options Pricing** | Black-Scholes call/put prices, Greeks, payoff diagrams |
-        | **AI What-If Scenarios** | GMM-based synthetic return generation, shock scenarios |
-        """)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        signal_card("Portfolio", "Mean–variance", "Max Sharpe + minimum variance")
+    with c2:
+        signal_card("Risk", "VaR + ES", "Monte Carlo and drawdown diagnostics")
+    with c3:
+        signal_card("Derivatives", "3 pricers", "Black–Scholes, tree, Monte Carlo")
+    with c4:
+        signal_card("Scenarios", "GMM regimes", "Baseline and shocked distributions")
+
+    st.markdown("### Research modules")
+    a, b, c = st.columns(3)
+    with a:
+        st.markdown(
+            """
+            <div class="method-box">
+            <b>Portfolio analytics</b><br><br>
+            Historical returns, dependence structure, constrained optimization,
+            opportunity-set simulation, and risk-adjusted allocation.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with b:
+        st.markdown(
+            """
+            <div class="method-box">
+            <b>Derivatives workbench</b><br><br>
+            Black–Scholes Greeks, implied volatility, CRR binomial trees,
+            risk-neutral Monte Carlo, parity checks, and pricing sensitivity.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c:
+        st.markdown(
+            """
+            <div class="method-box">
+            <b>Scenario & risk lab</b><br><br>
+            Historical VaR / Expected Shortfall, stochastic portfolio paths,
+            regime-mixture scenarios, and explicit market/rate shocks.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     st.stop()
 
-# ── Load prices ────────────────────────────────────────────────────────────────
-with st.spinner("Fetching price data…"):
-    if input_mode == "Upload CSV" and uploaded is not None:
+
+if start_date >= end_date:
+    st.error("History start must be earlier than history end.")
+    st.stop()
+
+with st.spinner("Loading market data and running quantitative models..."):
+    if input_mode == "Upload CSV":
+        if uploaded is None:
+            st.error("Upload a CSV file before running the research suite.")
+            st.stop()
         prices = load_csv_prices(uploaded)
         tickers = list(prices.columns)
-    elif tickers:
-        prices = load_data(tuple(tickers), start_date, end_date)
     else:
-        st.error("Please enter tickers or upload a CSV.")
-        st.stop()
+        if not tickers:
+            st.error("Enter at least one ticker.")
+            st.stop()
+        prices = fetch_price_data(
+            tuple(tickers),
+            str(start_date),
+            str(end_date),
+        )
 
-if prices is None or prices.empty:
-    st.error("Could not retrieve data. Check tickers/dates and try again.")
+if prices is None or prices.empty or prices.shape[1] == 0:
+    st.error("No usable price history was returned.")
     st.stop()
 
-returns = prices.pct_change().dropna()
-n_assets = len(prices.columns)
+returns = prices.pct_change(fill_method=None).dropna()
+if len(returns) < 30:
+    st.error("At least 30 complete return observations are required.")
+    st.stop()
+
 asset_names = list(prices.columns)
+n_assets = len(asset_names)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 0 — OVERVIEW
-# ═══════════════════════════════════════════════════════════════════════════════
-with tabs[0]:
-    st.subheader("📋 Portfolio Overview")
+frontier = efficient_frontier(
+    returns,
+    n_portfolios=n_portfolios,
+    risk_free_rate=risk_free_rate,
+    allow_short=allow_short,
+    random_state=42,
+)
+opt_weights, opt_ret, opt_vol, opt_sharpe = max_sharpe_weights(
+    returns,
+    risk_free_rate=risk_free_rate,
+    allow_short=allow_short,
+    random_state=42,
+)
+min_weights, min_ret, min_vol = min_variance_weights(
+    returns,
+    allow_short=allow_short,
+)
+min_sharpe = (
+    (min_ret - risk_free_rate) / min_vol
+    if min_vol > 0
+    else 0.0
+)
 
-    # KPI metrics row
-    total_returns = (prices.iloc[-1] / prices.iloc[0] - 1) * 100
-    annual_vols = returns.std() * np.sqrt(252) * 100
-    ann_rets = returns.mean() * 252 * 100
+portfolio_returns = returns @ opt_weights
+portfolio_wealth = (1.0 + portfolio_returns).cumprod()
+portfolio_drawdown = max_drawdown(portfolio_wealth)
+var_95, es_95 = var_cvar(portfolio_returns, 0.95)
+var_99, es_99 = var_cvar(portfolio_returns, 0.99)
 
-    cols = st.columns(min(n_assets, 5))
-    for i, ticker in enumerate(asset_names[:5]):
-        with cols[i]:
-            st.metric(
-                label=ticker,
-                value=f"${prices[ticker].iloc[-1]:.2f}",
-                delta=f"{total_returns[ticker]:.1f}% total return",
-            )
+paths = monte_carlo_paths(
+    portfolio_returns,
+    n_paths=n_mc_paths,
+    horizon=mc_horizon,
+    initial_value=1.0,
+    seed=42,
+)
 
-    st.markdown("---")
-    col_left, col_right = st.columns([3, 2])
+call_price, put_price, greeks = black_scholes(
+    opt_spot,
+    opt_strike,
+    opt_maturity,
+    opt_rate,
+    opt_vol,
+)
+pricing = compare_option_pricers(
+    opt_spot,
+    opt_strike,
+    opt_maturity,
+    opt_rate,
+    opt_vol,
+    option_type=option_type,
+    binomial_steps=binomial_steps,
+    monte_carlo_paths=option_mc_paths,
+    seed=42,
+)
+parity_gap = put_call_parity_gap(
+    opt_spot,
+    opt_strike,
+    opt_maturity,
+    opt_rate,
+    call_price,
+    put_price,
+)
 
-    with col_left:
-        # Normalised price chart
-        fig_norm = go.Figure()
-        norm_prices = prices / prices.iloc[0] * 100
-        for ticker in asset_names:
-            fig_norm.add_trace(
-                go.Scatter(x=norm_prices.index, y=norm_prices[ticker],
-                           name=ticker, mode="lines")
-            )
-        fig_norm.update_layout(
-            title="Normalized Price Performance (Base=100)",
-            xaxis_title="Date", yaxis_title="Indexed Price",
-            template="plotly_dark", height=380,
+iv_result = None
+if observed_option_price > 0:
+    try:
+        iv_result = implied_volatility(
+            observed_option_price,
+            opt_spot,
+            opt_strike,
+            opt_maturity,
+            opt_rate,
+            option_type=option_type,
         )
-        st.plotly_chart(fig_norm, use_container_width=True)
+    except ValueError as exc:
+        st.sidebar.warning(f"Implied volatility unavailable: {exc}")
 
-    with col_right:
-        # Correlation heatmap
-        fig_corr = correlation_heatmap(returns, asset_names)
-        st.plotly_chart(fig_corr, use_container_width=True)
+shocked_paths, normal_paths = gmm_scenario_returns(
+    portfolio_returns,
+    n_paths=scenario_paths,
+    horizon=252,
+    shock_pct=shock_pct,
+    rate_shock=rate_hike_bps / 10_000.0,
+    risk_free_rate=risk_free_rate,
+    n_components=min(3, max(1, len(portfolio_returns) // 30)),
+    seed=42,
+)
 
-    # Summary stats table
-    st.subheader("📊 Summary Statistics")
-    stats_df = pd.DataFrame({
-        "Ticker": asset_names,
-        "Ann. Return (%)": ann_rets.round(2).values,
-        "Ann. Volatility (%)": annual_vols.round(2).values,
-        "Total Return (%)": total_returns.round(2).values,
-        "Sharpe (approx)": ((ann_rets - risk_free_rate * 100) /
-                            annual_vols).round(3).values,
-    })
-    st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 1 — PORTFOLIO OPTIMIZER
-# ═══════════════════════════════════════════════════════════════════════════════
-with tabs[1]:
-    st.subheader("🎯 Mean-Variance Portfolio Optimization")
+h1, h2, h3, h4 = st.columns(4)
+with h1:
+    signal_card("Assets", str(n_assets), " / ".join(asset_names[:4]) + ("…" if n_assets > 4 else ""))
+with h2:
+    signal_card("Observations", f"{len(returns):,}", "Complete daily return rows")
+with h3:
+    signal_card("Max-Sharpe", f"{opt_sharpe:.2f}", f"{format_pct(opt_ret)} expected return")
+with h4:
+    signal_card("95% Expected Shortfall", format_pct(es_95), "Historical daily tail loss")
 
-    with st.spinner("Computing efficient frontier…"):
-        frontier_results = efficient_frontier(
-            returns, n_portfolios, risk_free_rate, allow_short
-        )
-        opt_weights, opt_ret, opt_vol, opt_sharpe = max_sharpe_weights(
-            returns, risk_free_rate, allow_short
-        )
+st.write("")
 
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Max Sharpe Ratio", f"{opt_sharpe:.3f}")
-    col_b.metric("Expected Annual Return", format_pct(opt_ret))
-    col_c.metric("Expected Annual Volatility", format_pct(opt_vol))
+overview_tab, portfolio_tab, risk_tab, derivatives_tab, scenario_tab, methodology_tab = st.tabs(
+    [
+        "Market Overview",
+        "Portfolio Lab",
+        "Risk Lab",
+        "Derivatives Lab",
+        "Regime Scenarios",
+        "Methodology",
+    ]
+)
 
-    st.markdown("---")
-    col_left2, col_right2 = st.columns([3, 2])
 
-    with col_left2:
-        # Efficient frontier scatter
-        fig_ef = go.Figure()
-        fig_ef.add_trace(go.Scatter(
-            x=frontier_results["vols"] * 100,
-            y=frontier_results["rets"] * 100,
-            mode="markers",
-            marker=dict(
-                color=frontier_results["sharpes"],
-                colorscale="Viridis",
-                colorbar=dict(title="Sharpe"),
-                size=4,
-                opacity=0.6,
+with overview_tab:
+    normalized = prices / prices.iloc[0] * 100.0
+    left, right = st.columns([3, 2])
+    with left:
+        st.plotly_chart(
+            line_chart(
+                normalized,
+                title="Normalized Market Performance",
+                y_title="Indexed value (100 = start)",
             ),
-            name="Random Portfolios",
-        ))
-        # Highlight max-Sharpe
-        fig_ef.add_trace(go.Scatter(
-            x=[opt_vol * 100], y=[opt_ret * 100],
-            mode="markers+text",
-            marker=dict(color="red", size=14, symbol="star"),
-            text=["Max Sharpe"],
-            textposition="top center",
-            name="Optimal Portfolio",
-        ))
-        fig_ef.update_layout(
-            title="Efficient Frontier",
-            xaxis_title="Volatility (%)",
-            yaxis_title="Expected Return (%)",
-            template="plotly_dark", height=420,
+            use_container_width=True,
         )
-        st.plotly_chart(fig_ef, use_container_width=True)
-
-    with col_right2:
-        fig_pie = weights_pie_chart(opt_weights, asset_names)
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    # Weights table
-    st.subheader("Optimal Weights")
-    w_df = pd.DataFrame({
-        "Asset": asset_names,
-        "Weight (%)": (opt_weights * 100).round(2),
-    }).sort_values("Weight (%)", ascending=False)
-    st.dataframe(w_df, use_container_width=True, hide_index=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 2 — MONTE CARLO & RISK
-# ═══════════════════════════════════════════════════════════════════════════════
-with tabs[2]:
-    st.subheader("🎲 Monte Carlo Simulation & Risk Metrics")
-
-    # Portfolio returns using optimized weights
-    port_returns = returns @ opt_weights
-
-    with st.spinner("Running Monte Carlo…"):
-        last_price = 1.0  # normalized portfolio value
-        paths = monte_carlo_paths(port_returns, n_mc_paths, 252, last_price)
-
-    var_95, cvar_95 = var_cvar(port_returns, 0.95)
-    var_99, cvar_99 = var_cvar(port_returns, 0.99)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("VaR 95% (daily)", format_pct(var_95))
-    c2.metric("CVaR 95% (daily)", format_pct(cvar_95))
-    c3.metric("VaR 99% (daily)", format_pct(var_99))
-    c4.metric("CVaR 99% (daily)", format_pct(var_99))
-
-    st.markdown("---")
-    col_mc1, col_mc2 = st.columns([3, 2])
-
-    with col_mc1:
-        # MC paths chart
-        fig_mc = go.Figure()
-        x_days = list(range(paths.shape[0]))
-        for i in range(min(200, n_mc_paths)):
-            fig_mc.add_trace(go.Scatter(
-                x=x_days, y=paths[:, i],
-                mode="lines", line=dict(width=0.5, color="rgba(99,110,250,0.15)"),
-                showlegend=False,
-            ))
-        # Median + percentile bands
-        p5 = np.percentile(paths, 5, axis=1)
-        p50 = np.percentile(paths, 50, axis=1)
-        p95 = np.percentile(paths, 95, axis=1)
-        fig_mc.add_trace(go.Scatter(x=x_days, y=p50, name="Median",
-                                    line=dict(color="white", width=2)))
-        fig_mc.add_trace(go.Scatter(x=x_days, y=p95, name="95th pct",
-                                    line=dict(color="green", width=1.5,
-                                              dash="dash")))
-        fig_mc.add_trace(go.Scatter(x=x_days, y=p5, name="5th pct",
-                                    line=dict(color="red", width=1.5,
-                                              dash="dash")))
-        fig_mc.update_layout(
-            title=f"Monte Carlo Simulation ({n_mc_paths} paths, 1-year horizon)",
-            xaxis_title="Trading Days", yaxis_title="Portfolio Value ($)",
-            template="plotly_dark", height=420,
-        )
-        st.plotly_chart(fig_mc, use_container_width=True)
-
-    with col_mc2:
-        # Final-value distribution
-        final_vals = paths[-1, :]
-        fig_hist = returns_histogram(final_vals,
-                                     title="Distribution of Final Portfolio Value")
-        st.plotly_chart(fig_hist, use_container_width=True)
-
-    # Risk metrics table
-    st.subheader("📋 Risk Summary")
-    risk_data = {
-        "Metric": ["Ann. Return", "Ann. Volatility",
-                   "VaR 95%", "CVaR 95%", "VaR 99%", "CVaR 99%",
-                   "Max Simulated Gain", "Max Simulated Loss"],
-        "Value": [
-            format_pct(port_returns.mean() * 252),
-            format_pct(port_returns.std() * np.sqrt(252)),
-            format_pct(var_95), format_pct(cvar_95),
-            format_pct(var_99), format_pct(cvar_99),
-            format_pct(final_vals.max() - 1),
-            format_pct(final_vals.min() - 1),
-        ],
-    }
-    st.dataframe(pd.DataFrame(risk_data), use_container_width=True,
-                 hide_index=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 3 — OPTIONS PRICING
-# ═══════════════════════════════════════════════════════════════════════════════
-with tabs[3]:
-    st.subheader("🔮 Black-Scholes Option Pricing")
-
-    call_price, put_price, greeks = black_scholes(
-        opt_spot, opt_strike, opt_maturity, opt_r, opt_vol
-    )
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Call Price", f"${call_price:.4f}")
-    c2.metric("Put Price", f"${put_price:.4f}")
-    c3.metric("Delta (Call)", f"{greeks['delta_call']:.4f}")
-    c4.metric("Gamma", f"{greeks['gamma']:.4f}")
-    c5.metric("Theta (Call)", f"{greeks['theta_call']:.4f}")
-
-    st.markdown("---")
-
-    # Payoff diagram
-    spot_range = np.linspace(opt_spot * 0.5, opt_spot * 1.5, 300)
-    call_payoffs = np.maximum(spot_range - opt_strike, 0) - call_price
-    put_payoffs = np.maximum(opt_strike - spot_range, 0) - put_price
-
-    fig_opt = go.Figure()
-    fig_opt.add_trace(go.Scatter(x=spot_range, y=call_payoffs, name="Long Call",
-                                 line=dict(color="green", width=2)))
-    fig_opt.add_trace(go.Scatter(x=spot_range, y=put_payoffs, name="Long Put",
-                                 line=dict(color="red", width=2)))
-    fig_opt.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.5)
-    fig_opt.add_vline(x=opt_strike, line_dash="dot", line_color="yellow",
-                      annotation_text="Strike")
-    fig_opt.update_layout(
-        title="Option Payoff at Expiration",
-        xaxis_title="Spot Price at Expiry ($)",
-        yaxis_title="P&L ($)",
-        template="plotly_dark", height=380,
-    )
-    st.plotly_chart(fig_opt, use_container_width=True)
-
-    # Greeks vs Spot
-    vols_range = np.linspace(0.05, 0.80, 100)
-    call_prices_vol = [black_scholes(opt_spot, opt_strike, opt_maturity,
-                                     opt_r, v)[0] for v in vols_range]
-    put_prices_vol = [black_scholes(opt_spot, opt_strike, opt_maturity,
-                                    opt_r, v)[1] for v in vols_range]
-
-    fig_vega = go.Figure()
-    fig_vega.add_trace(go.Scatter(x=vols_range * 100, y=call_prices_vol,
-                                   name="Call Price", line=dict(color="green")))
-    fig_vega.add_trace(go.Scatter(x=vols_range * 100, y=put_prices_vol,
-                                   name="Put Price", line=dict(color="red")))
-    fig_vega.update_layout(
-        title="Option Price vs Implied Volatility",
-        xaxis_title="Volatility (%)", yaxis_title="Price ($)",
-        template="plotly_dark", height=320,
-    )
-    st.plotly_chart(fig_vega, use_container_width=True)
-
-    # Greeks table
-    st.subheader("Greeks Summary")
-    greeks_df = pd.DataFrame([{
-        "Call Price": f"${call_price:.4f}",
-        "Put Price": f"${put_price:.4f}",
-        "Delta (Call)": f"{greeks['delta_call']:.4f}",
-        "Delta (Put)": f"{greeks['delta_put']:.4f}",
-        "Gamma": f"{greeks['gamma']:.6f}",
-        "Theta (Call)": f"{greeks['theta_call']:.4f}",
-        "Theta (Put)": f"{greeks['theta_put']:.4f}",
-        "Vega": f"{greeks['vega']:.4f}",
-        "Rho (Call)": f"{greeks['rho_call']:.4f}",
-        "Rho (Put)": f"{greeks['rho_put']:.4f}",
-    }])
-    st.dataframe(greeks_df, use_container_width=True, hide_index=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 4 — AI WHAT-IF SCENARIOS
-# ═══════════════════════════════════════════════════════════════════════════════
-with tabs[4]:
-    st.subheader("🤖 AI-Driven What-If Scenario Analysis")
-    st.caption(
-        "Uses Gaussian Mixture Models (GMM) to learn the return distribution "
-        "and generate synthetic price paths with user-defined shocks."
-    )
-
-    with st.spinner("Fitting GMM and generating scenarios…"):
-        scenario_paths, scenario_normal = gmm_scenario_returns(
-            port_returns,
-            n_paths=n_mc_paths,
-            horizon=252,
-            shock_pct=shock_pct / 100,
-            rate_shock=rate_hike / 10000,
-            risk_free_rate=risk_free_rate,
+    with right:
+        st.plotly_chart(
+            correlation_heatmap(returns, asset_names),
+            use_container_width=True,
         )
 
-    # Comparison chart
-    x_days = list(range(scenario_paths.shape[0]))
-    fig_scen = make_subplots(rows=1, cols=2,
-                              subplot_titles=["Normal Conditions",
-                                              f"Shock: {shock_pct:+}% market, "
-                                              f"{rate_hike:+}bps rate"])
-
-    for title, data, col in [("Normal", scenario_normal, 1),
-                              ("Shocked", scenario_paths, 2)]:
-        for i in range(min(100, n_mc_paths)):
-            fig_scen.add_trace(
-                go.Scatter(x=x_days, y=data[:, i], mode="lines",
-                           line=dict(width=0.5,
-                                     color=("rgba(99,110,250,0.1)" if col == 1
-                                            else "rgba(255,80,80,0.1)")),
-                           showlegend=False),
-                row=1, col=col,
-            )
-        p50 = np.percentile(data, 50, axis=1)
-        p5 = np.percentile(data, 5, axis=1)
-        p95 = np.percentile(data, 95, axis=1)
-        color = "blue" if col == 1 else "red"
-        fig_scen.add_trace(go.Scatter(x=x_days, y=p50, name=f"{title} Median",
-                                       line=dict(color=color, width=2)),
-                           row=1, col=col)
-        fig_scen.add_trace(go.Scatter(x=x_days, y=p95, name=f"{title} 95th",
-                                       line=dict(color=color, width=1,
-                                                 dash="dash")),
-                           row=1, col=col)
-        fig_scen.add_trace(go.Scatter(x=x_days, y=p5, name=f"{title} 5th",
-                                       line=dict(color=color, width=1,
-                                                 dash="dot")),
-                           row=1, col=col)
-
-    fig_scen.update_layout(template="plotly_dark", height=460,
-                            title="Scenario Comparison: Normal vs Shocked")
-    st.plotly_chart(fig_scen, use_container_width=True)
-
-    # Before/after metrics table
-    st.subheader("📋 Before vs After Shock Metrics")
-    final_normal = scenario_normal[-1, :]
-    final_shocked = scenario_paths[-1, :]
-
-    def scenario_metrics(vals, label):
-        return {
-            "Scenario": label,
-            "Median Return (%)": f"{(np.median(vals) - 1) * 100:.2f}%",
-            "Mean Return (%)": f"{(np.mean(vals) - 1) * 100:.2f}%",
-            "Prob. of Loss (%)": f"{(vals < 1).mean() * 100:.1f}%",
-            "5th Pct Value ($)": f"${np.percentile(vals, 5):.3f}",
-            "95th Pct Value ($)": f"${np.percentile(vals, 95):.3f}",
+    annual_returns = returns.mean() * 252
+    annual_vols = returns.std() * np.sqrt(252)
+    total_returns = prices.iloc[-1] / prices.iloc[0] - 1.0
+    stats = pd.DataFrame(
+        {
+            "Asset": asset_names,
+            "Annualized Return": annual_returns.values,
+            "Annualized Volatility": annual_vols.values,
+            "Total Return": total_returns.values,
+            "Approx. Sharpe": (
+                (annual_returns - risk_free_rate) / annual_vols.replace(0, np.nan)
+            ).values,
         }
-
-    metrics_df = pd.DataFrame([
-        scenario_metrics(final_normal, "Normal"),
-        scenario_metrics(final_shocked, f"Shock {shock_pct:+}% / {rate_hike:+}bps"),
-    ])
-    st.dataframe(metrics_df, use_container_width=True, hide_index=True)
-
-    # Distribution comparison
-    fig_dist = go.Figure()
-    fig_dist.add_trace(go.Histogram(x=(final_normal - 1) * 100, name="Normal",
-                                     opacity=0.6, nbinsx=60,
-                                     marker_color="blue"))
-    fig_dist.add_trace(go.Histogram(x=(final_shocked - 1) * 100, name="Shocked",
-                                     opacity=0.6, nbinsx=60,
-                                     marker_color="red"))
-    fig_dist.update_layout(
-        barmode="overlay",
-        title="Final Portfolio Return Distribution: Normal vs Shocked",
-        xaxis_title="1-Year Return (%)", yaxis_title="Frequency",
-        template="plotly_dark", height=360,
     )
-    st.plotly_chart(fig_dist, use_container_width=True)
+    st.markdown("#### Market statistics")
+    st.dataframe(
+        stats.style.format(
+            {
+                "Annualized Return": "{:.2%}",
+                "Annualized Volatility": "{:.2%}",
+                "Total Return": "{:.2%}",
+                "Approx. Sharpe": "{:.2f}",
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
 
-# ── Footer ─────────────────────────────────────────────────────────────────────
-st.markdown("---")
+
+with portfolio_tab:
+    p1, p2, p3, p4, p5, p6 = st.columns(6)
+    p1.metric("Max-Sharpe return", format_pct(opt_ret))
+    p2.metric("Max-Sharpe volatility", format_pct(opt_vol))
+    p3.metric("Max-Sharpe ratio", f"{opt_sharpe:.2f}")
+    p4.metric("Min-var return", format_pct(min_ret))
+    p5.metric("Min-var volatility", format_pct(min_vol))
+    p6.metric("Min-var Sharpe", f"{min_sharpe:.2f}")
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=frontier["vols"],
+            y=frontier["rets"],
+            mode="markers",
+            marker={
+                "size": 5,
+                "color": frontier["sharpes"],
+                "colorscale": "Tealgrn",
+                "opacity": 0.42,
+                "colorbar": {"title": "Sharpe", "thickness": 12},
+            },
+            name="Simulated portfolios",
+            hovertemplate="Vol: %{x:.2%}<br>Return: %{y:.2%}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[opt_vol],
+            y=[opt_ret],
+            mode="markers",
+            marker={"size": 19, "color": ROSE, "symbol": "star"},
+            name="Maximum Sharpe",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[min_vol],
+            y=[min_ret],
+            mode="markers",
+            marker={"size": 15, "color": TEAL, "symbol": "diamond"},
+            name="Minimum variance",
+        )
+    )
+    fig.update_layout(
+        title={"text": "Portfolio Opportunity Set", "x": 0.02},
+        height=520,
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font={"family": "Inter, Arial, sans-serif", "color": NAVY},
+        xaxis={"title": "Annualized volatility", "tickformat": ".1%", "gridcolor": GRID},
+        yaxis={"title": "Annualized return", "tickformat": ".1%", "gridcolor": GRID},
+        legend={"orientation": "h", "y": -0.16},
+        margin={"l": 55, "r": 30, "t": 65, "b": 70},
+    )
+
+    left, right = st.columns([3, 2])
+    with left:
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        if allow_short:
+            weight_frame = pd.DataFrame(
+                {
+                    "Asset": asset_names,
+                    "Weight": opt_weights,
+                }
+            ).sort_values("Weight")
+            weight_fig = go.Figure(
+                go.Bar(
+                    x=weight_frame["Weight"],
+                    y=weight_frame["Asset"],
+                    orientation="h",
+                    marker_color=[
+                        ROSE if value < 0 else TEAL
+                        for value in weight_frame["Weight"]
+                    ],
+                    text=[f"{value:.1%}" for value in weight_frame["Weight"]],
+                    textposition="outside",
+                )
+            )
+            weight_fig.update_layout(
+                title={"text": "Signed Max-Sharpe Weights", "x": 0.02},
+                height=390,
+                paper_bgcolor="white",
+                plot_bgcolor="white",
+                xaxis={"tickformat": ".0%", "gridcolor": GRID},
+                margin={"l": 40, "r": 30, "t": 65, "b": 40},
+            )
+            st.plotly_chart(weight_fig, use_container_width=True)
+        else:
+            st.plotly_chart(
+                weights_pie_chart(opt_weights, asset_names),
+                use_container_width=True,
+            )
+
+    allocation = pd.DataFrame(
+        {
+            "Asset": asset_names,
+            "Maximum Sharpe": opt_weights,
+            "Minimum Variance": min_weights,
+        }
+    ).sort_values("Maximum Sharpe", ascending=False)
+    st.dataframe(
+        allocation.style.format(
+            {
+                "Maximum Sharpe": "{:.2%}",
+                "Minimum Variance": "{:.2%}",
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
+with risk_tab:
+    r1, r2, r3, r4, r5 = st.columns(5)
+    r1.metric("95% VaR", format_pct(var_95))
+    r2.metric("95% Expected Shortfall", format_pct(es_95))
+    r3.metric("99% VaR", format_pct(var_99))
+    r4.metric("99% Expected Shortfall", format_pct(es_99))
+    r5.metric("Historical max drawdown", format_pct(portfolio_drawdown))
+
+    sample_count = min(180, paths.shape[1])
+    fig_paths = go.Figure()
+    x_days = np.arange(paths.shape[0])
+    for index in range(sample_count):
+        fig_paths.add_trace(
+            go.Scatter(
+                x=x_days,
+                y=paths[:, index],
+                mode="lines",
+                line={"width": 0.55, "color": "rgba(15,118,110,0.08)"},
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+    p05 = np.percentile(paths, 5, axis=1)
+    p50 = np.percentile(paths, 50, axis=1)
+    p95 = np.percentile(paths, 95, axis=1)
+    fig_paths.add_trace(
+        go.Scatter(
+            x=x_days,
+            y=p50,
+            name="Median",
+            line={"color": NAVY, "width": 2.6},
+        )
+    )
+    fig_paths.add_trace(
+        go.Scatter(
+            x=x_days,
+            y=p95,
+            name="95th percentile",
+            line={"color": TEAL, "width": 1.8, "dash": "dash"},
+        )
+    )
+    fig_paths.add_trace(
+        go.Scatter(
+            x=x_days,
+            y=p05,
+            name="5th percentile",
+            line={"color": ROSE, "width": 1.8, "dash": "dash"},
+        )
+    )
+    fig_paths.update_layout(
+        title={"text": "Portfolio Monte Carlo Paths", "x": 0.02},
+        height=470,
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        xaxis={"title": "Trading day", "gridcolor": GRID},
+        yaxis={"title": "Portfolio value", "gridcolor": GRID},
+        legend={"orientation": "h", "y": -0.16},
+        margin={"l": 55, "r": 30, "t": 65, "b": 70},
+    )
+
+    left, right = st.columns([3, 2])
+    with left:
+        st.plotly_chart(fig_paths, use_container_width=True)
+    with right:
+        st.plotly_chart(
+            returns_histogram(
+                paths[-1],
+                title=f"Terminal Value Distribution ({mc_horizon} days)",
+            ),
+            use_container_width=True,
+        )
+
+    terminal = paths[-1]
+    risk_summary = pd.DataFrame(
+        {
+            "Metric": [
+                "Mean terminal value",
+                "Median terminal value",
+                "5th percentile",
+                "95th percentile",
+                "Probability below starting value",
+            ],
+            "Value": [
+                f"{terminal.mean():.3f}",
+                f"{np.median(terminal):.3f}",
+                f"{np.percentile(terminal, 5):.3f}",
+                f"{np.percentile(terminal, 95):.3f}",
+                f"{np.mean(terminal < 1.0):.2%}",
+            ],
+        }
+    )
+    st.dataframe(risk_summary, hide_index=True, use_container_width=True)
+
+
+with derivatives_tab:
+    selected_bs = black_scholes_price(
+        opt_spot,
+        opt_strike,
+        opt_maturity,
+        opt_rate,
+        opt_vol,
+        option_type=option_type,
+    )
+
+    d1, d2, d3, d4, d5 = st.columns(5)
+    d1.metric("Black–Scholes", format_dollar(selected_bs))
+    d2.metric("Binomial tree", format_dollar(pricing.binomial))
+    d3.metric(
+        "Risk-neutral Monte Carlo",
+        format_dollar(pricing.monte_carlo),
+        delta=f"SE {format_dollar(pricing.monte_carlo_standard_error, 3)}",
+        delta_color="off",
+    )
+    d4.metric("Put–call parity gap", format_dollar(parity_gap, 6))
+    d5.metric(
+        "Implied volatility",
+        "—" if iv_result is None else format_pct(iv_result),
+    )
+
+    comparison = pd.DataFrame(
+        {
+            "Method": ["Black–Scholes", "CRR Binomial", "Risk-neutral Monte Carlo"],
+            "Price": [
+                pricing.black_scholes,
+                pricing.binomial,
+                pricing.monte_carlo,
+            ],
+            "Difference vs Black–Scholes": [
+                0.0,
+                pricing.binomial_difference,
+                pricing.monte_carlo_difference,
+            ],
+        }
+    )
+
+    left, right = st.columns([2, 3])
+    with left:
+        st.markdown("#### Cross-method pricing")
+        st.dataframe(
+            comparison.style.format(
+                {
+                    "Price": format_dollar,
+                    "Difference vs Black–Scholes": lambda value: format_dollar(value, 4),
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        greek_rows = []
+        for key, value in greeks.items():
+            if key not in {"d1", "d2"}:
+                greek_rows.append(
+                    {
+                        "Greek": key.replace("_", " ").title(),
+                        "Value": value,
+                    }
+                )
+        st.markdown("#### Black–Scholes Greeks")
+        st.dataframe(
+            pd.DataFrame(greek_rows).style.format({"Value": "{:.5f}"}),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    with right:
+        spot_grid = np.linspace(opt_spot * 0.75, opt_spot * 1.25, 21)
+        vol_grid = np.linspace(max(0.05, opt_vol * 0.45), opt_vol * 1.75, 21)
+        surface = np.empty((len(vol_grid), len(spot_grid)))
+        for row_index, volatility in enumerate(vol_grid):
+            for col_index, spot in enumerate(spot_grid):
+                surface[row_index, col_index] = black_scholes_price(
+                    spot,
+                    opt_strike,
+                    opt_maturity,
+                    opt_rate,
+                    volatility,
+                    option_type=option_type,
+                )
+
+        heatmap = go.Figure(
+            go.Heatmap(
+                z=surface,
+                x=spot_grid,
+                y=vol_grid,
+                colorscale=[
+                    [0.0, "#ECFEFF"],
+                    [0.45, "#67E8F9"],
+                    [1.0, "#0F172A"],
+                ],
+                colorbar={"title": "Price", "thickness": 12},
+                hovertemplate=(
+                    "Spot: %{x:.2f}<br>Volatility: %{y:.1%}"
+                    "<br>Option price: %{z:.2f}<extra></extra>"
+                ),
+            )
+        )
+        heatmap.update_layout(
+            title={"text": f"{option_type.title()} Price Sensitivity Surface", "x": 0.02},
+            height=540,
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            xaxis={"title": "Spot price"},
+            yaxis={"title": "Volatility", "tickformat": ".0%"},
+            margin={"l": 55, "r": 30, "t": 65, "b": 55},
+        )
+        st.plotly_chart(heatmap, use_container_width=True)
+
+    st.caption(
+        "European Black–Scholes, CRR binomial, and risk-neutral Monte Carlo "
+        "should converge under consistent assumptions. Differences are shown explicitly."
+    )
+
+
+with scenario_tab:
+    normal_terminal = normal_paths[-1]
+    shocked_terminal = shocked_paths[-1]
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Baseline median", f"{np.median(normal_terminal):.3f}")
+    s2.metric("Shocked median", f"{np.median(shocked_terminal):.3f}")
+    s3.metric(
+        "Median impact",
+        f"{np.median(shocked_terminal) / np.median(normal_terminal) - 1.0:.2%}",
+    )
+    s4.metric(
+        "Shocked probability of loss",
+        f"{np.mean(shocked_terminal < 1.0):.2%}",
+    )
+
+    days = np.arange(normal_paths.shape[0])
+    normal_median = np.median(normal_paths, axis=1)
+    shocked_median = np.median(shocked_paths, axis=1)
+    normal_p10 = np.percentile(normal_paths, 10, axis=1)
+    normal_p90 = np.percentile(normal_paths, 90, axis=1)
+    shocked_p10 = np.percentile(shocked_paths, 10, axis=1)
+    shocked_p90 = np.percentile(shocked_paths, 90, axis=1)
+
+    scenario_fig = go.Figure()
+    scenario_fig.add_trace(
+        go.Scatter(
+            x=days,
+            y=normal_p90,
+            line={"width": 0},
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    scenario_fig.add_trace(
+        go.Scatter(
+            x=days,
+            y=normal_p10,
+            fill="tonexty",
+            fillcolor="rgba(15,118,110,0.10)",
+            line={"width": 0},
+            name="Baseline 10–90%",
+            hoverinfo="skip",
+        )
+    )
+    scenario_fig.add_trace(
+        go.Scatter(
+            x=days,
+            y=normal_median,
+            line={"color": TEAL, "width": 2.5},
+            name="Baseline median",
+        )
+    )
+    scenario_fig.add_trace(
+        go.Scatter(
+            x=days,
+            y=shocked_p90,
+            line={"width": 0},
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    scenario_fig.add_trace(
+        go.Scatter(
+            x=days,
+            y=shocked_p10,
+            fill="tonexty",
+            fillcolor="rgba(225,29,72,0.09)",
+            line={"width": 0},
+            name="Shocked 10–90%",
+            hoverinfo="skip",
+        )
+    )
+    scenario_fig.add_trace(
+        go.Scatter(
+            x=days,
+            y=shocked_median,
+            line={"color": ROSE, "width": 2.5},
+            name="Shocked median",
+        )
+    )
+    scenario_fig.update_layout(
+        title={"text": "Regime-Mixture Scenario Paths", "x": 0.02},
+        height=500,
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        xaxis={"title": "Trading day", "gridcolor": GRID},
+        yaxis={"title": "Portfolio value", "gridcolor": GRID},
+        legend={"orientation": "h", "y": -0.16},
+        margin={"l": 55, "r": 30, "t": 65, "b": 70},
+    )
+    st.plotly_chart(scenario_fig, use_container_width=True)
+
+    st.markdown(
+        f"""
+        <div class="method-box">
+        <b>Scenario specification</b><br><br>
+        One-time market shock: <b>{shock_pct:.1%}</b><br>
+        Annual drift adjustment from rate shock: <b>{rate_hike_bps} bps</b><br>
+        Distribution model: <b>Gaussian Mixture Model</b> fit to historical optimized-portfolio returns.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+with methodology_tab:
+    m1, m2 = st.columns(2)
+    with m1:
+        st.markdown(
+            """
+            <div class="method-box">
+            <b>Portfolio construction</b><br><br>
+            Historical daily returns feed mean–variance optimization. Maximum-Sharpe
+            and minimum-variance allocations use bounded SLSQP optimization, while
+            the opportunity set is simulated reproducibly.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            """
+            <div class="method-box">
+            <b>Risk modeling</b><br><br>
+            Historical VaR / Expected Shortfall summarize observed downside tails.
+            Parametric Monte Carlo simulates portfolio-value uncertainty using
+            historical mean and volatility.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with m2:
+        st.markdown(
+            """
+            <div class="method-box">
+            <b>Derivatives validation</b><br><br>
+            European option values are cross-checked across Black–Scholes,
+            Cox–Ross–Rubinstein binomial trees, and risk-neutral Monte Carlo.
+            Put–call parity and implied volatility add internal consistency checks.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            """
+            <div class="method-box">
+            <b>Regime scenarios</b><br><br>
+            A Gaussian mixture learns multiple return regimes from history.
+            Shock scenarios apply an explicit one-time market move and rate-driven
+            drift adjustment rather than hiding assumptions inside a narrative.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("#### Limitations")
+    st.markdown(
+        """
+        Historical inputs are regime-dependent. Portfolio optimization can be
+        sensitive to estimation error. Monte Carlo and option models rely on
+        distributional assumptions. Scenario probabilities are not forecasts,
+        and the application does not model every implementation, liquidity,
+        tax, or regulatory constraint.
+        """
+    )
+
 st.caption(
-    "⚠️ **Disclaimer**: This dashboard is for educational and simulation "
-    "purposes only. It does not constitute financial advice. Past performance "
-    "and simulated results do not guarantee future returns. "
-    "Always consult a qualified financial professional before investing."
+    "Educational quantitative-finance research project. Historical, simulated, "
+    "and theoretical results do not constitute investment advice."
 )
