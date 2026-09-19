@@ -4,7 +4,6 @@ data_loader.py
 Handles price data retrieval from yfinance and CSV uploads.
 """
 
-import io
 import pandas as pd
 import numpy as np
 import streamlit as st
