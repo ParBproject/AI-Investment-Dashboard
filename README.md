@@ -12,7 +12,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-Interactive_Dashboard-FF4B4B?logo=streamlit&logoColor=white)](app.py)
 [![Analytics](https://img.shields.io/badge/Analytics-Optimization_%7C_Monte_Carlo_%7C_Options-1f6feb)](#capabilities)
 
-An interactive financial-analytics application combining market-data exploration, portfolio optimization, Monte Carlo simulation, Black–Scholes option pricing, and AI-assisted scenario analysis.
+An interactive financial-analytics application combining market-data exploration, portfolio optimization, Monte Carlo simulation, Black–Scholes option pricing, and Gaussian-mixture scenario analysis.
 
 ## Capabilities
 
@@ -22,7 +22,7 @@ An interactive financial-analytics application combining market-data exploration
 | Portfolio optimization | Efficient frontier, maximum-Sharpe allocation, and weight visualization |
 | Monte Carlo | Simulated portfolio paths and distribution-based risk measures |
 | Options | Black–Scholes pricing and sensitivity analysis |
-| Scenario analysis | Configurable what-if shocks and AI-style scenario generation |
+| Scenario analysis | Configurable what-if shocks and Gaussian-mixture scenario paths |
 | Reporting | Interactive Plotly charts and decision-oriented KPI cards |
 
 ## Application Preview
