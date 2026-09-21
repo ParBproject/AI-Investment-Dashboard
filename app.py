@@ -117,7 +117,7 @@ with st.sidebar:
 st.title("📈 AI-Driven Investment Dashboard")
 st.caption(
     "Portfolio Optimization · Monte Carlo · Black-Scholes · "
-    "AI Scenario Generation  |  ⚠️ Educational use only"
+    "Gaussian-Mixture Scenarios  |  ⚠️ Educational use only"
 )
 
 # Tabs
@@ -126,7 +126,7 @@ tabs = st.tabs([
     "📊 Portfolio Optimizer",
     "🎲 Monte Carlo & Risk",
     "🔮 Options Pricing",
-    "🤖 AI What-If Scenarios",
+    "📉 What-If Scenarios",
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -147,7 +147,7 @@ if not run_btn:
         | **Portfolio Optimizer** | Mean-variance optimization, Efficient Frontier, Max-Sharpe weights |
         | **Monte Carlo & Risk** | Simulated price paths, VaR/CVaR, drawdown analysis |
         | **Options Pricing** | Black-Scholes call/put prices, Greeks, payoff diagrams |
-        | **AI What-If Scenarios** | GMM-based synthetic return generation, shock scenarios |
+        | **What-If Scenarios** | Gaussian-mixture synthetic returns and shock scenarios |
         """)
     st.stop()
 
@@ -451,7 +451,7 @@ with tabs[3]:
 #  TAB 4 — AI WHAT-IF SCENARIOS
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[4]:
-    st.subheader("🤖 AI-Driven What-If Scenario Analysis")
+    st.subheader("What-If Scenario Analysis")
     st.caption(
         "Uses Gaussian Mixture Models (GMM) to learn the return distribution "
         "and generate synthetic price paths with user-defined shocks."
