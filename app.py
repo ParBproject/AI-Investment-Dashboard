@@ -153,20 +153,28 @@ if not run_btn:
 
 # ── Load prices ────────────────────────────────────────────────────────────────
 with st.spinner("Fetching price data…"):
-    if input_mode == "Upload CSV" and uploaded is not None:
-        prices = load_csv_prices(uploaded)
-        tickers = list(prices.columns)
-    elif tickers:
-        prices = load_data(tuple(tickers), start_date, end_date)
-    else:
-        st.error("Please enter tickers or upload a CSV.")
+    try:
+        if input_mode == "Upload CSV":
+            if uploaded is None:
+                st.error("Please upload a CSV file.")
+                st.stop()
+            prices = load_csv_prices(uploaded)
+        elif tickers:
+            prices = load_data(tuple(tickers), start_date, end_date)
+        else:
+            st.error("Please enter tickers or upload a CSV.")
+            st.stop()
+    except ValueError as exc:
+        st.error(str(exc))
         st.stop()
 
-if prices is None or prices.empty:
-    st.error("Could not retrieve data. Check tickers/dates and try again.")
-    st.stop()
-
 returns = prices.pct_change().dropna()
+if returns.shape[0] < 2 or returns.shape[1] == 0 or not np.isfinite(returns.to_numpy()).all():
+    st.error(
+        "Need at least two dates and finite prices for every asset. "
+        "Widen the date range or check the file for zeros and gaps."
+    )
+    st.stop()
 n_assets = len(prices.columns)
 asset_names = list(prices.columns)
 
