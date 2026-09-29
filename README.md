@@ -8,7 +8,7 @@
 <p align="center"><img src="assets/screenshots/02_efficient_frontier.png" alt="Efficient frontier" width="100%"></p>
 <p align="center"><img src="assets/screenshots/03_monte_carlo.png" alt="Monte Carlo paths" width="100%"></p>
 
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](requirements.txt)
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](requirements.txt)
 [![Streamlit](https://img.shields.io/badge/Streamlit-Interactive_Dashboard-FF4B4B?logo=streamlit&logoColor=white)](app.py)
 [![Analytics](https://img.shields.io/badge/Analytics-Optimization_%7C_Monte_Carlo_%7C_Options-1f6feb)](#capabilities)
 
@@ -71,7 +71,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ~~~
 
-Requires Python 3.11 or newer. `requirements.txt` pins the libraries the tests were run against. Matplotlib is included for `notebooks/01_model_exploration.ipynb`.
+Requires Python 3.12 or newer (`scipy` 1.18 does not install on 3.11). `requirements.txt` pins the libraries the tests were run against. Matplotlib is included for `notebooks/01_model_exploration.ipynb`.
 
 Open http://localhost:8501.
 
