@@ -252,3 +252,118 @@ def min_variance_weights(
         cov_matrix,
     )
     return weights, ann_ret, ann_vol
+
+
+def _max_return_weights(
+    returns: pd.DataFrame,
+    allow_short: bool = False,
+) -> tuple[np.ndarray, float, float]:
+    """Highest-return portfolio on the same bounds as the other optimizers."""
+    _validate_returns(returns)
+
+    n = returns.shape[1]
+    mean_returns = returns.mean().to_numpy()
+    cov_matrix = returns.cov().to_numpy()
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = ((-1.0, 1.0) if allow_short else (0.0, 1.0),) * n
+    w0 = np.ones(n) / n
+
+    result = minimize(
+        lambda weights, means: -float(np.dot(weights, means)),
+        w0,
+        args=(mean_returns,),
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"ftol": 1e-12, "maxiter": 1000},
+    )
+    if result.success:
+        weights = result.x
+    elif allow_short:
+        weights = w0
+    else:
+        weights = np.zeros(n)
+        weights[int(np.argmax(mean_returns))] = 1.0
+
+    ann_ret, ann_vol = compute_portfolio_metrics(weights, mean_returns, cov_matrix)
+    return weights, ann_ret, ann_vol
+
+
+def minimum_variance_frontier(
+    returns: pd.DataFrame,
+    n_points: int = 25,
+    allow_short: bool = False,
+) -> dict:
+    """
+    Trace the mean-variance frontier from the global minimum-variance portfolio
+    up to the highest feasible return.
+
+    ``efficient_frontier`` still draws random feasible portfolios. This curve
+    is the set of minimum-variance portfolios for a grid of target returns,
+    which is the efficient frontier on these bounds.
+    """
+    _validate_returns(returns)
+    if n_points < 1:
+        raise ValueError("n_points must be at least 1")
+
+    mean_returns = returns.mean().to_numpy()
+    cov_matrix = returns.cov().to_numpy()
+    n = returns.shape[1]
+    bounds = ((-1.0, 1.0) if allow_short else (0.0, 1.0),) * n
+
+    w_min, ret_min, _ = min_variance_weights(returns, allow_short=allow_short)
+    _, ret_max, _ = _max_return_weights(returns, allow_short=allow_short)
+
+    if n_points == 1 or abs(ret_max - ret_min) < 1e-10:
+        weights = w_min.reshape(1, -1)
+        _, vol_min = compute_portfolio_metrics(w_min, mean_returns, cov_matrix)
+        return {
+            "rets": np.array([ret_min]),
+            "vols": np.array([vol_min]),
+            "weights": weights,
+        }
+
+    targets = np.linspace(ret_min, ret_max, n_points)
+    curve_weights: list[np.ndarray] = []
+    curve_rets: list[float] = []
+    curve_vols: list[float] = []
+
+    for target in targets:
+        constraints = [
+            {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
+            {
+                "type": "eq",
+                "fun": lambda w, level=float(target): (
+                    float(np.dot(w, mean_returns)) * 252.0 - level
+                ),
+            },
+        ]
+        result = minimize(
+            _portfolio_vol,
+            w_min,
+            args=(mean_returns, cov_matrix),
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"ftol": 1e-12, "maxiter": 1000},
+        )
+        if not result.success or not np.isfinite(result.x).all():
+            continue
+        achieved_ret, achieved_vol = compute_portfolio_metrics(
+            result.x,
+            mean_returns,
+            cov_matrix,
+        )
+        curve_weights.append(np.asarray(result.x, dtype=float))
+        curve_rets.append(achieved_ret)
+        curve_vols.append(achieved_vol)
+
+    if not curve_rets:
+        raise ValueError("Could not trace a minimum-variance frontier for these returns.")
+
+    order = np.argsort(curve_rets)
+    return {
+        "rets": np.asarray(curve_rets, dtype=float)[order],
+        "vols": np.asarray(curve_vols, dtype=float)[order],
+        "weights": np.vstack(curve_weights)[order],
+    }

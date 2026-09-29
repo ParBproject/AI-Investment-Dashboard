@@ -39,9 +39,9 @@ def load_heavy_libs():
 # ── Module imports ─────────────────────────────────────────────────────────────
 from src.data_loader import fetch_price_data, load_csv_prices
 from src.optimizer import (
-    compute_portfolio_metrics,
     efficient_frontier,
     max_sharpe_weights,
+    minimum_variance_frontier,
 )
 from src.models import (
     black_scholes,
@@ -236,6 +236,7 @@ with tabs[1]:
         frontier_results = efficient_frontier(
             returns, n_portfolios, risk_free_rate, allow_short
         )
+        frontier_curve = minimum_variance_frontier(returns, allow_short=allow_short)
         opt_weights, opt_ret, opt_vol, opt_sharpe = max_sharpe_weights(
             returns, risk_free_rate, allow_short
         )
@@ -263,6 +264,13 @@ with tabs[1]:
                 opacity=0.6,
             ),
             name="Random Portfolios",
+        ))
+        fig_ef.add_trace(go.Scatter(
+            x=frontier_curve["vols"] * 100,
+            y=frontier_curve["rets"] * 100,
+            mode="lines",
+            line=dict(color="#FFA15A", width=2.5),
+            name="Efficient Frontier",
         ))
         # Highlight max-Sharpe
         fig_ef.add_trace(go.Scatter(
