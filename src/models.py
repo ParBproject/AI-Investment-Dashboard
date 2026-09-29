@@ -445,6 +445,7 @@ def gmm_scenario_returns(
     gmm = GaussianMixture(
         n_components=n_components,
         covariance_type="full",
+        random_state=seed,
         max_iter=500,
     )
     try:
