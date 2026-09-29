@@ -4,7 +4,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models import black_scholes, geometric_brownian_motion, monte_carlo_paths
+from src.models import (
+    black_scholes,
+    geometric_brownian_motion,
+    max_drawdown,
+    monte_carlo_paths,
+    var_cvar,
+)
 
 
 # Hull, Options, Futures, and Other Derivatives. European call on a
@@ -211,6 +217,45 @@ def test_gbm_seed_does_not_touch_global_rng() -> None:
     after = np.random.random()
     assert np.allclose(first, second)
     assert before == after
+
+
+def test_historical_var_uses_empirical_quantile_and_inclusive_tail() -> None:
+    # 10 sorted returns. At 80% confidence the tail is the worst
+    # round-half-up(0.2 * 10) = 2 observations. VaR is the less extreme of
+    # those two (-0.04) and CVaR is their mean. The old index
+    # int((1 - 0.8) * 10) collapsed to 1 because 1 - 0.8 is not exact.
+    values = np.array(
+        [-0.05, -0.04, -0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.04]
+    )
+    var, cvar = var_cvar(pd.Series(values), 0.80)
+    assert var == pytest.approx(-0.04)
+    assert cvar == pytest.approx((-0.05 + -0.04) / 2)
+
+    # Exactly 5% of 100 observations: worst 5 returns, VaR at the 5th.
+    grid = np.linspace(-1.0, 1.0, 100)
+    var95, cvar95 = var_cvar(grid, 0.95)
+    worst = np.sort(grid)[:5]
+    assert var95 == pytest.approx(worst[-1])
+    assert cvar95 == pytest.approx(worst.mean())
+    assert cvar95 <= var95
+
+
+def test_var_cvar_rejects_bad_inputs() -> None:
+    with pytest.raises(ValueError, match="between"):
+        var_cvar(pd.Series([0.01, -0.02]), 1.0)
+    with pytest.raises(ValueError, match="finite"):
+        var_cvar(pd.Series([np.nan, np.inf]), 0.95)
+
+
+def test_max_drawdown_on_a_known_path() -> None:
+    values = pd.Series([100.0, 120.0, 90.0, 95.0])
+    # Peak 120, trough 90 → -25%.
+    assert max_drawdown(values) == pytest.approx(-0.25)
+
+
+def test_max_drawdown_with_zero_peak_is_not_infinite() -> None:
+    result = max_drawdown(pd.Series([0.0, 0.0]))
+    assert not np.isinf(result)
 
 
 def test_gbm_zero_volatility_is_deterministic_drift() -> None:

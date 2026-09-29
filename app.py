@@ -313,7 +313,7 @@ with tabs[2]:
     c1.metric("VaR 95% (daily)", format_pct(var_95))
     c2.metric("CVaR 95% (daily)", format_pct(cvar_95))
     c3.metric("VaR 99% (daily)", format_pct(var_99))
-    c4.metric("CVaR 99% (daily)", format_pct(var_99))
+    c4.metric("CVaR 99% (daily)", format_pct(cvar_99))
 
     st.markdown("---")
     col_mc1, col_mc2 = st.columns([3, 2])

@@ -309,20 +309,36 @@ def var_cvar(
     """
     Compute historical Value-at-Risk (VaR) and Conditional VaR (CVaR / ES).
 
+    The tail holds ``k = round-half-up((1 - confidence_level) * n)``
+    observations (at least one). VaR is the least extreme of those returns and
+    CVaR is their mean. ``int((1 - confidence) * n)`` is not used: it is off by
+    one and ``1 - confidence`` is not exact in floating point.
+
+    Both values are return quantiles. They are negative when the tail is a loss.
+
     Parameters
     ----------
-    returns : pd.Series  Daily portfolio returns.
-    confidence_level : float  E.g. 0.95 for 95% VaR.
+    returns : pd.Series  Portfolio returns, one observation per row.
+    confidence_level : float  E.g. 0.95 for 95% VaR. Must lie in (0, 1).
 
     Returns
     -------
-    (var, cvar) — both expressed as negative numbers indicating loss.
+    (var, cvar)
     """
-    sorted_returns = np.sort(returns.values)
-    index = int((1 - confidence_level) * len(sorted_returns))
-    var = sorted_returns[index]                         # already negative
-    cvar = sorted_returns[:index].mean() if index > 0 else sorted_returns[0]
-    return var, cvar
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("confidence_level must be strictly between 0 and 1")
+
+    values = np.asarray(returns, dtype=float).reshape(-1)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        raise ValueError("returns must contain at least one finite observation")
+
+    ordered = np.sort(values)
+    # floor(x + 0.5) is round-half-up and absorbs a 1-ulp error on exact integers.
+    tail_count = int(np.floor((1.0 - confidence_level) * ordered.size + 0.5))
+    tail_count = min(max(tail_count, 1), ordered.size)
+    tail = ordered[:tail_count]
+    return float(tail[-1]), float(tail.mean())
 
 
 def max_drawdown(cum_returns: pd.Series) -> float:
@@ -337,9 +353,14 @@ def max_drawdown(cum_returns: pd.Series) -> float:
     -------
     float  Maximum drawdown as a negative fraction (e.g. -0.35 = -35%).
     """
+    if len(cum_returns) == 0:
+        return float("nan")
     rolling_max = cum_returns.cummax()
-    drawdown = (cum_returns - rolling_max) / rolling_max
-    return drawdown.min()
+    safe_max = rolling_max.replace(0, np.nan)
+    drawdown = (cum_returns - rolling_max) / safe_max
+    if drawdown.isna().all():
+        return float("nan")
+    return float(drawdown.min())
 
 
 def calmar_ratio(
