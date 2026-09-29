@@ -8,7 +8,6 @@ AI Investment Dashboard.
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -17,6 +16,8 @@ import plotly.express as px
 
 def format_pct(value: float, decimals: int = 2) -> str:
     """Format a float as a percentage string (e.g. 0.0342 → '3.42%')."""
+    if value is None or not np.isfinite(value):
+        return "n/a"
     return f"{value * 100:.{decimals}f}%"
 
 
@@ -42,10 +43,29 @@ def weights_pie_chart(
     weights : np.ndarray  Portfolio allocation fractions.
     labels : list[str]    Asset names.
     title : str           Chart title.
+
+    Negative weights (short sales) are drawn as a bar chart. A pie of signed
+    weights either drops the shorts or plots their absolute value.
     """
+    signed = np.asarray(weights, dtype=float)
+    if np.any(signed < -1e-8):
+        fig = go.Figure(go.Bar(
+            x=labels,
+            y=np.round(signed * 100, 2),
+            hovertemplate="%{x}: %{y:.2f}%<extra></extra>",
+        ))
+        fig.update_layout(
+            title=title,
+            template="plotly_dark",
+            height=360,
+            yaxis_title="Weight (%)",
+            showlegend=False,
+        )
+        return fig
+
     fig = go.Figure(go.Pie(
         labels=labels,
-        values=np.round(weights * 100, 2),
+        values=np.round(np.clip(signed, 0.0, None) * 100, 2),
         hole=0.4,
         textinfo="label+percent",
         hovertemplate="%{label}: %{value:.2f}%<extra></extra>",
@@ -108,6 +128,9 @@ def returns_histogram(
     bins : int           Number of histogram bins.
     color : str          Bar fill colour.
     """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+
     fig = go.Figure()
     fig.add_trace(go.Histogram(
         x=values,
@@ -117,21 +140,21 @@ def returns_histogram(
         name="Frequency",
     ))
 
-    # Simple KDE using gaussian kernel for the overlay
-    from scipy.stats import gaussian_kde
-    kde = gaussian_kde(values, bw_method="scott")
-    x_range = np.linspace(values.min(), values.max(), 300)
-    y_kde = kde(x_range)
-    # Scale KDE to histogram height
-    count, _ = np.histogram(values, bins=bins)
-    scale = count.max() / y_kde.max()
-
-    fig.add_trace(go.Scatter(
-        x=x_range, y=y_kde * scale,
-        mode="lines",
-        line=dict(color="white", width=2),
-        name="KDE",
-    ))
+    # A zero-width sample (for example a constant price path) has no density.
+    if values.size >= 2 and float(np.std(values)) > 0.0:
+        from scipy.stats import gaussian_kde
+        kde = gaussian_kde(values, bw_method="scott")
+        x_range = np.linspace(values.min(), values.max(), 300)
+        y_kde = kde(x_range)
+        count, _ = np.histogram(values, bins=bins)
+        if y_kde.max() > 0.0 and count.max() > 0:
+            scale = count.max() / y_kde.max()
+            fig.add_trace(go.Scatter(
+                x=x_range, y=y_kde * scale,
+                mode="lines",
+                line=dict(color="white", width=2),
+                name="KDE",
+            ))
 
     fig.update_layout(
         title=title,
