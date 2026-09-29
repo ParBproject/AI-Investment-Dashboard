@@ -18,6 +18,102 @@ from typing import Optional
 # Black-Scholes
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _validate_black_scholes_inputs(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+) -> None:
+    """Reject inputs that make the closed form undefined."""
+    if not np.isfinite([S, K, T, r, sigma]).all():
+        raise ValueError("Spot, strike, maturity, rate, and volatility must be finite.")
+    if S <= 0 or K <= 0:
+        raise ValueError("Spot and strike must be positive.")
+    if T < 0:
+        raise ValueError("Time to maturity cannot be negative.")
+    if sigma < 0:
+        raise ValueError("Volatility cannot be negative.")
+
+
+def _greeks(
+    delta_call: float,
+    gamma: float,
+    vega: float,
+    theta_call: float,
+    theta_put: float,
+    rho_call: float,
+    rho_put: float,
+    d1: float,
+    d2: float,
+) -> dict:
+    """Pack Greeks. Vega and rho are per 1 percentage point; theta is per day."""
+    return {
+        "delta_call": float(delta_call),
+        "delta_put": float(delta_call - 1.0),
+        "gamma": float(gamma),
+        "vega": float(vega),
+        "theta_call": float(theta_call),
+        "theta_put": float(theta_put),
+        "rho_call": float(rho_call),
+        "rho_put": float(rho_put),
+        "d1": float(d1),
+        "d2": float(d2),
+    }
+
+
+def _discounted_intrinsic(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+) -> tuple[float, float, dict]:
+    """
+    Black-Scholes limit for zero volatility or zero time.
+
+    With no volatility the spot grows deterministically at the risk-free rate,
+    so the call is the discounted forward intrinsic ``max(S - K e^{-rT}, 0)``,
+    not the undiscounted ``max(S - K, 0)``. At expiry (T = 0) that reduces to
+    ordinary intrinsic value. Gamma and vega are reported as 0, including at
+    the kink, so callers always receive finite Greeks.
+    """
+    discount = float(np.exp(-r * T))
+    present_strike = K * discount
+    call = max(S - present_strike, 0.0)
+    put = max(present_strike - S, 0.0)
+
+    if np.isclose(S, present_strike):
+        delta_call = 0.5
+    elif S > present_strike:
+        delta_call = 1.0
+    else:
+        delta_call = 0.0
+
+    # Theta is dV/dt with t calendar time, so the sign flips relative to dV/dT.
+    # An in-the-money call V = S - K e^{-rT} has theta/year = -r K e^{-rT}.
+    carry = r * present_strike
+    if T == 0 or np.isclose(S, present_strike):
+        theta_call = 0.0
+        theta_put = 0.0
+        rho_call = 0.0
+        rho_put = 0.0
+    elif call > 0.0:
+        theta_call = -carry / 365.0
+        theta_put = 0.0
+        rho_call = (T * present_strike) / 100.0
+        rho_put = 0.0
+    else:
+        theta_call = 0.0
+        theta_put = carry / 365.0
+        rho_call = 0.0
+        rho_put = -(T * present_strike) / 100.0
+
+    greeks = _greeks(
+        delta_call, 0.0, 0.0, theta_call, theta_put, rho_call, rho_put, np.nan, np.nan
+    )
+    return float(call), float(put), greeks
+
+
 def black_scholes(
     S: float,
     K: float,
@@ -28,59 +124,69 @@ def black_scholes(
     """
     Compute Black-Scholes call/put prices and option Greeks.
 
+    Prices are the standard no-dividend formulas. Greeks use the quoting
+    convention already baked into the dashboard:
+
+    - delta, gamma: raw partial derivatives
+    - vega: per 1 percentage point of volatility (textbook dV/dσ divided by 100)
+    - theta: per calendar day (textbook dV/dt divided by 365)
+    - rho: per 1 percentage point of the rate (textbook dV/dr divided by 100)
+
     Parameters
     ----------
     S : float    Spot price
     K : float    Strike price
     T : float    Time to maturity (years)
-    r : float    Risk-free rate (annualised, e.g. 0.045)
+    r : float    Risk-free rate (annualised, continuous, e.g. 0.045)
     sigma : float  Volatility (annualised, e.g. 0.25)
 
     Returns
     -------
     (call_price, put_price, greeks_dict)
+
+    Raises
+    ------
+    ValueError
+        If spot or strike is non-positive, maturity or volatility is negative,
+        or any input is non-finite.
     """
-    if T <= 0 or sigma <= 0:
-        call = max(S - K, 0.0)
-        put = max(K - S, 0.0)
-        return call, put, {}
+    _validate_black_scholes_inputs(S, K, T, r, sigma)
+    if T == 0 or sigma == 0:
+        return _discounted_intrinsic(S, K, T, r)
 
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
+    discount = np.exp(-r * T)
 
-    call_price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-    put_price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    call_price = S * norm.cdf(d1) - K * discount * norm.cdf(d2)
+    put_price = K * discount * norm.cdf(-d2) - S * norm.cdf(-d1)
 
-    # Greeks
-    delta_call = norm.cdf(d1)
-    delta_put = delta_call - 1.0
-    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    vega = S * norm.pdf(d1) * np.sqrt(T) / 100          # per 1% vol change
+    pdf_d1 = norm.pdf(d1)
+    gamma = pdf_d1 / (S * sigma * np.sqrt(T))
+    vega = S * pdf_d1 * np.sqrt(T) / 100          # per 1 percentage point of vol
     theta_call = (
-        -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
-        - r * K * np.exp(-r * T) * norm.cdf(d2)
-    ) / 365                                               # per calendar day
+        -(S * pdf_d1 * sigma) / (2 * np.sqrt(T))
+        - r * K * discount * norm.cdf(d2)
+    ) / 365                                       # per calendar day
     theta_put = (
-        -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
-        + r * K * np.exp(-r * T) * norm.cdf(-d2)
+        -(S * pdf_d1 * sigma) / (2 * np.sqrt(T))
+        + r * K * discount * norm.cdf(-d2)
     ) / 365
-    rho_call = K * T * np.exp(-r * T) * norm.cdf(d2) / 100
-    rho_put = -K * T * np.exp(-r * T) * norm.cdf(-d2) / 100
+    rho_call = K * T * discount * norm.cdf(d2) / 100
+    rho_put = -K * T * discount * norm.cdf(-d2) / 100
 
-    greeks = {
-        "delta_call": delta_call,
-        "delta_put": delta_put,
-        "gamma": gamma,
-        "vega": vega,
-        "theta_call": theta_call,
-        "theta_put": theta_put,
-        "rho_call": rho_call,
-        "rho_put": rho_put,
-        "d1": d1,
-        "d2": d2,
-    }
-
-    return call_price, put_price, greeks
+    greeks = _greeks(
+        norm.cdf(d1),
+        gamma,
+        vega,
+        theta_call,
+        theta_put,
+        rho_call,
+        rho_put,
+        d1,
+        d2,
+    )
+    return float(call_price), float(put_price), greeks
 
 
 # ─────────────────────────────────────────────────────────────────────────────
