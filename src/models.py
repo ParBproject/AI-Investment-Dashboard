@@ -198,40 +198,52 @@ def monte_carlo_paths(
     n_paths: int = 1000,
     horizon: int = 252,
     initial_value: float = 1.0,
+    seed: Optional[int] = None,
 ) -> np.ndarray:
     """
     Generate Monte Carlo simulation paths using historical return statistics.
 
-    Assumes returns are normally distributed (parametric MC).
+    Assumes simple returns are normally distributed (parametric MC). ``returns``
+    are per-step, not annualised: a daily series uses the daily mean as drift
+    and the daily sample standard deviation (ddof=1) as volatility. Each step
+    multiplies wealth by ``1 + shock``. The random draws come from a local
+    Generator so a seed is reproducible and does not change NumPy's global RNG.
 
     Parameters
     ----------
     returns : pd.Series
-        Historical daily portfolio returns.
+        Historical per-step portfolio returns (daily when horizon is in days).
     n_paths : int
         Number of simulation paths.
     horizon : int
-        Forecast horizon in trading days.
+        Forecast horizon in steps (trading days for a daily series).
     initial_value : float
         Starting portfolio value.
+    seed : int, optional
+        Seed for the local random generator.
 
     Returns
     -------
     np.ndarray of shape (horizon + 1, n_paths)
         Simulated portfolio value paths (first row = initial_value).
     """
-    mu = returns.mean()
-    sigma = returns.std()
+    if n_paths < 1:
+        raise ValueError("n_paths must be at least 1")
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
 
-    # Draw random shocks: shape (horizon, n_paths)
-    shocks = np.random.normal(mu, sigma, (horizon, n_paths))
+    values = pd.Series(returns, dtype=float).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(values) < 2:
+        raise ValueError("returns must contain at least two finite observations")
 
-    # Compute cumulative returns
-    paths = np.zeros((horizon + 1, n_paths))
+    mu = float(values.mean())
+    sigma = float(values.std(ddof=1))
+    rng = np.random.default_rng(seed)
+    shocks = rng.normal(mu, sigma, (horizon, n_paths))
+
+    paths = np.empty((horizon + 1, n_paths))
     paths[0] = initial_value
-    for t in range(1, horizon + 1):
-        paths[t] = paths[t - 1] * (1 + shocks[t - 1])
-
+    paths[1:] = initial_value * np.cumprod(1.0 + shocks, axis=0)
     return paths
 
 
@@ -261,19 +273,28 @@ def geometric_brownian_motion(
     -------
     np.ndarray of shape (n_steps + 1, n_paths)
     """
-    if seed is not None:
-        np.random.seed(seed)
+    if S0 <= 0:
+        raise ValueError("S0 must be positive")
+    if sigma < 0:
+        raise ValueError("sigma cannot be negative")
+    if T < 0:
+        raise ValueError("T cannot be negative")
+    if n_steps < 1 or n_paths < 1:
+        raise ValueError("n_steps and n_paths must be at least 1")
+    if not np.isfinite([S0, mu, sigma, T]).all():
+        raise ValueError("GBM inputs must be finite")
 
+    # Local generator: np.random.seed would leak into every later simulation.
+    rng = np.random.default_rng(seed)
     dt = T / n_steps
-    paths = np.zeros((n_steps + 1, n_paths))
+    shocks = rng.standard_normal((n_steps, n_paths))
+    increments = np.exp(
+        (mu - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * shocks
+    )
+
+    paths = np.empty((n_steps + 1, n_paths))
     paths[0] = S0
-
-    Z = np.random.standard_normal((n_steps, n_paths))
-    for t in range(1, n_steps + 1):
-        paths[t] = paths[t - 1] * np.exp(
-            (mu - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * Z[t - 1]
-        )
-
+    paths[1:] = S0 * np.cumprod(increments, axis=0)
     return paths
 
 

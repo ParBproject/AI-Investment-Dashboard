@@ -1,9 +1,10 @@
 """Reference tests for option pricing, simulation, and risk metrics."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from src.models import black_scholes
+from src.models import black_scholes, geometric_brownian_motion, monte_carlo_paths
 
 
 # Hull, Options, Futures, and Other Derivatives. European call on a
@@ -149,3 +150,71 @@ def test_expiry_returns_intrinsic_and_finite_greeks() -> None:
 def test_black_scholes_rejects_invalid_inputs(args: tuple, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         black_scholes(*args)
+
+
+def test_monte_carlo_compounds_daily_drift_not_annualised_drift() -> None:
+    daily = 0.001
+    history = pd.Series(np.full(30, daily))
+    paths = monte_carlo_paths(history, n_paths=4, horizon=20, initial_value=1.0, seed=1)
+    expected = (1.0 + daily) ** np.arange(21)
+    assert paths.shape == (21, 4)
+    assert np.allclose(paths[:, 0], expected)
+    # An accidental * 252 on the drift would make the first step 1.252, not 1.001.
+    assert paths[1, 0] == pytest.approx(1.001)
+
+
+def test_monte_carlo_volatility_is_per_step() -> None:
+    rng = np.random.default_rng(0)
+    daily_vol = 0.02
+    history = pd.Series(rng.normal(0.0005, daily_vol, 200_000))
+    paths = monte_carlo_paths(history, n_paths=8_000, horizon=1, seed=123)
+    step = paths[1] - 1.0
+    assert step.mean() == pytest.approx(history.mean(), abs=1e-3)
+    assert step.std(ddof=1) == pytest.approx(history.std(ddof=1), abs=1e-3)
+    # Annualising by sqrt(252) inside the daily step would land near 0.32, not 0.02.
+    assert step.std(ddof=1) < 0.05
+
+
+def test_monte_carlo_seed_is_reproducible_and_local() -> None:
+    history = pd.Series(np.linspace(-0.02, 0.03, 40))
+    first = monte_carlo_paths(history, n_paths=30, horizon=10, seed=7)
+    np.random.seed(123)
+    before = np.random.random()
+    np.random.seed(123)
+    second = monte_carlo_paths(history, n_paths=30, horizon=10, seed=7)
+    after = np.random.random()
+    assert np.allclose(first, second)
+    assert before == after
+
+
+def test_monte_carlo_rejects_short_history() -> None:
+    with pytest.raises(ValueError, match="two finite"):
+        monte_carlo_paths(pd.Series([0.01]), n_paths=5, horizon=3, seed=1)
+
+
+def test_gbm_log_return_mean_and_volatility() -> None:
+    mu, sigma, years = 0.08, 0.20, 1.0
+    paths = geometric_brownian_motion(
+        S0=100.0, mu=mu, sigma=sigma, T=years, n_steps=252, n_paths=20_000, seed=7
+    )
+    log_return = np.log(paths[-1] / paths[0])
+    assert log_return.mean() == pytest.approx((mu - 0.5 * sigma**2) * years, abs=0.01)
+    assert log_return.std(ddof=1) == pytest.approx(sigma * np.sqrt(years), abs=0.01)
+
+
+def test_gbm_seed_does_not_touch_global_rng() -> None:
+    np.random.seed(123)
+    before = np.random.random()
+    np.random.seed(123)
+    first = geometric_brownian_motion(50.0, 0.05, 0.1, 1.0, 30, 8, seed=4)
+    second = geometric_brownian_motion(50.0, 0.05, 0.1, 1.0, 30, 8, seed=4)
+    after = np.random.random()
+    assert np.allclose(first, second)
+    assert before == after
+
+
+def test_gbm_zero_volatility_is_deterministic_drift() -> None:
+    mu, years, steps = 0.10, 1.0, 4
+    paths = geometric_brownian_motion(100.0, mu, 0.0, years, steps, 3, seed=1)
+    expected_terminal = 100.0 * np.exp(mu * years)
+    assert np.allclose(paths[-1], expected_terminal)
