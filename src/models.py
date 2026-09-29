@@ -384,7 +384,6 @@ def gmm_scenario_returns(
     horizon: int = 252,
     shock_pct: float = -0.20,
     rate_shock: float = 0.01,
-    risk_free_rate: float = 0.04,
     n_components: int = 3,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -394,6 +393,16 @@ def gmm_scenario_returns(
 
     The GMM captures regime-switching behaviour (e.g. calm vs crisis periods)
     that simple Gaussian models miss.
+
+    ``rate_shock`` is an annual drift adjustment (0.01 = 100 bps) and is
+    subtracted from each daily draw after dividing by 252. ``shock_pct`` is
+    added once, on day 1. Both scenarios are reseeded with ``seed``, so they
+    share draws and differ only by those adjustments.
+
+    An integer ``random_state`` on ``GaussianMixture`` rebuilds the same
+    generator on every ``sample`` call, which would repeat one day's draws
+    for the whole horizon. Sampling therefore uses a ``RandomState`` instance
+    that advances.
 
     Parameters
     ----------
@@ -407,11 +416,9 @@ def gmm_scenario_returns(
         Market shock fraction (e.g. -0.20 for -20% market crash). Applied
         as a one-time adjustment on day 1 of shocked paths.
     rate_shock : float
-        Rate hike in decimal (e.g. 0.01 for 100bps). Reduces drift.
-    risk_free_rate : float
-        Annual risk-free rate (used for drift adjustment).
+        Annual drift adjustment in decimal (e.g. 0.01 for 100 bps).
     n_components : int
-        Number of GMM mixture components.
+        Number of GMM mixture components. Capped at the sample size.
     seed : int
         Random seed.
 
@@ -424,32 +431,41 @@ def gmm_scenario_returns(
     except ImportError:
         raise ImportError("scikit-learn is required: pip install scikit-learn")
 
-    np.random.seed(seed)
-    ret_vals = historical_returns.values.reshape(-1, 1)
+    if n_paths < 1 or horizon < 1:
+        raise ValueError("n_paths and horizon must be at least 1")
+    if n_components < 1:
+        raise ValueError("n_components must be at least 1")
 
-    # Fit GMM to historical return distribution
+    values = np.asarray(historical_returns, dtype=float).reshape(-1)
+    values = values[np.isfinite(values)]
+    if values.size < 2:
+        raise ValueError("Need at least two finite historical returns to fit scenarios.")
+
+    n_components = min(int(n_components), int(values.size))
     gmm = GaussianMixture(
         n_components=n_components,
         covariance_type="full",
-        random_state=seed,
         max_iter=500,
     )
-    gmm.fit(ret_vals)
+    try:
+        gmm.fit(values.reshape(-1, 1))
+    except ValueError as exc:
+        raise ValueError(f"Could not fit the scenario model: {exc}") from exc
 
-    # Sample from GMM for both scenarios
-    def _simulate(shock_day_0: float = 0.0, drift_adj: float = 0.0):
-        """Simulate n_paths of horizon steps using GMM-drawn returns."""
-        paths = np.zeros((horizon + 1, n_paths))
+    def _simulate(shock_day_0: float, drift_adj: float) -> np.ndarray:
+        """Simulate paths. Reseeding makes the shock comparable across scenarios."""
+        gmm.random_state = np.random.RandomState(seed)
+        paths = np.empty((horizon + 1, n_paths))
         paths[0] = 1.0
+        daily_drift = drift_adj / 252.0
         for t in range(1, horizon + 1):
             sampled, _ = gmm.sample(n_paths)
-            daily_returns = sampled.flatten() - drift_adj / 252
+            daily_returns = sampled.reshape(-1) - daily_drift
             if t == 1 and shock_day_0 != 0.0:
-                daily_returns += shock_day_0        # apply one-time shock
-            paths[t] = paths[t - 1] * (1 + daily_returns)
+                daily_returns = daily_returns + shock_day_0
+            paths[t] = paths[t - 1] * (1.0 + daily_returns)
         return paths
 
     normal_paths = _simulate(shock_day_0=0.0, drift_adj=0.0)
     shocked_paths = _simulate(shock_day_0=shock_pct, drift_adj=rate_shock)
-
     return shocked_paths, normal_paths

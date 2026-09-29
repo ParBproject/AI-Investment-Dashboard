@@ -464,7 +464,7 @@ with tabs[4]:
             horizon=252,
             shock_pct=shock_pct / 100,
             rate_shock=rate_hike / 10000,
-            risk_free_rate=risk_free_rate,
+            seed=42,
         )
 
     # Comparison chart

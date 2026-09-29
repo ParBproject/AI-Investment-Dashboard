@@ -7,6 +7,7 @@ import pytest
 from src.models import (
     black_scholes,
     geometric_brownian_motion,
+    gmm_scenario_returns,
     max_drawdown,
     monte_carlo_paths,
     var_cvar,
@@ -251,6 +252,48 @@ def test_max_drawdown_on_a_known_path() -> None:
     values = pd.Series([100.0, 120.0, 90.0, 95.0])
     # Peak 120, trough 90 → -25%.
     assert max_drawdown(values) == pytest.approx(-0.25)
+
+
+def test_gmm_days_are_not_repeated_and_seed_is_stable() -> None:
+    history = pd.Series(np.random.default_rng(1).normal(0.0004, 0.01, 300))
+    shocked, normal = gmm_scenario_returns(
+        history, n_paths=40, horizon=6, shock_pct=0.0, rate_shock=0.0, seed=42
+    )
+    again_shocked, again_normal = gmm_scenario_returns(
+        history, n_paths=40, horizon=6, shock_pct=0.0, rate_shock=0.0, seed=42
+    )
+    assert np.allclose(normal, again_normal)
+    assert np.allclose(shocked, again_shocked)
+
+    daily = normal[1:] / normal[:-1] - 1.0
+    # An integer GaussianMixture.random_state repeats the same draw every day.
+    assert not np.allclose(daily[0], daily[1])
+
+
+def test_gmm_shock_and_rate_shift_are_applied_once_per_day() -> None:
+    history = pd.Series(np.random.default_rng(2).normal(0.0, 0.015, 250))
+    shock = -0.20
+    rate = 0.01  # 100 bps annual
+    shocked, normal = gmm_scenario_returns(
+        history,
+        n_paths=30,
+        horizon=5,
+        shock_pct=shock,
+        rate_shock=rate,
+        seed=11,
+    )
+    normal_day = normal[1] / normal[0] - 1.0
+    shocked_day = shocked[1] / shocked[0] - 1.0
+    later_normal = normal[3] / normal[2] - 1.0
+    later_shocked = shocked[3] / shocked[2] - 1.0
+    assert np.allclose(shocked_day - normal_day, shock - rate / 252.0)
+    # The market shock is one day; later days differ only by the rate drag.
+    assert np.allclose(later_shocked - later_normal, -rate / 252.0)
+
+
+def test_gmm_rejects_a_one_point_history() -> None:
+    with pytest.raises(ValueError, match="two finite"):
+        gmm_scenario_returns(pd.Series([0.01]), n_paths=5, horizon=3)
 
 
 def test_max_drawdown_with_zero_peak_is_not_infinite() -> None:
