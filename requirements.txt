@@ -1,8 +1,10 @@
-streamlit>=1.32.0
-yfinance>=0.2.38
-pandas>=2.2.0
-numpy>=1.26.0
-plotly>=5.20.0
-scipy>=1.13.0
-scikit-learn>=1.4.0
-statsmodels>=0.14.1
+# Direct dependencies, pinned to the versions the tests and dashboard were run against.
+# pandas 3 and Streamlit 1.64 require Python 3.11+.
+streamlit==1.64.0
+yfinance==1.7.0
+pandas==3.0.6
+numpy==2.4.4
+plotly==7.1.0
+scipy==1.18.1
+scikit-learn==1.9.1
+matplotlib==3.11.2
