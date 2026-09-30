@@ -8,21 +8,21 @@
 <p align="center"><img src="assets/screenshots/02_efficient_frontier.png" alt="Efficient frontier" width="100%"></p>
 <p align="center"><img src="assets/screenshots/03_monte_carlo.png" alt="Monte Carlo paths" width="100%"></p>
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](requirements.txt)
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](requirements.txt)
 [![Streamlit](https://img.shields.io/badge/Streamlit-Interactive_Dashboard-FF4B4B?logo=streamlit&logoColor=white)](app.py)
 [![Analytics](https://img.shields.io/badge/Analytics-Optimization_%7C_Monte_Carlo_%7C_Options-1f6feb)](#capabilities)
 
-An interactive financial-analytics application combining market-data exploration, portfolio optimization, Monte Carlo simulation, Black–Scholes option pricing, and AI-assisted scenario analysis.
+An interactive financial-analytics application combining market-data exploration, portfolio optimization, Monte Carlo simulation, Black–Scholes option pricing, and Gaussian-mixture scenario analysis. There is no language model in this repository.
 
 ## Capabilities
 
 | Area | What the application provides |
 |---|---|
 | Market overview | Normalized prices, returns, correlations, and descriptive statistics |
-| Portfolio optimization | Efficient frontier, maximum-Sharpe allocation, and weight visualization |
-| Monte Carlo | Simulated portfolio paths and distribution-based risk measures |
-| Options | Black–Scholes pricing and sensitivity analysis |
-| Scenario analysis | Configurable what-if shocks and AI-style scenario generation |
+| Portfolio optimization | Minimum-variance efficient frontier, maximum-Sharpe allocation, random feasible portfolios, and weight visualization |
+| Monte Carlo | Seeded portfolio paths from daily (not annualised) drift and volatility, plus distribution-based risk measures |
+| Options | Black–Scholes prices and Greeks (vega and rho per 1 percentage point, theta per calendar day) |
+| Scenario analysis | Gaussian-mixture paths with a one-day market shock and an annual rate shock scaled by 1/252 |
 | Reporting | Interactive Plotly charts and decision-oriented KPI cards |
 
 ## Application Preview
@@ -71,6 +71,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ~~~
 
+Requires Python 3.12 or newer (`scipy` 1.18 does not install on 3.11). `requirements.txt` pins the libraries the tests were run against. Matplotlib is included for `notebooks/01_model_exploration.ipynb`.
+
 Open http://localhost:8501.
 
 ## Repository Structure
@@ -84,13 +86,15 @@ AI-Investment-Dashboard/
 │   ├── optimizer.py
 │   └── utils.py
 ├── notebooks/01_model_exploration.ipynb
+├── tests/
 ├── assets/screenshots/
+├── .github/workflows/ci.yml
 └── requirements.txt
 ~~~
 
 ## Skills Demonstrated
 
-Python, pandas, NumPy, SciPy, financial modelling, portfolio optimization, Monte Carlo methods, option pricing, scenario analysis, Streamlit, Plotly, and modular application design.
+Python, pandas, NumPy, SciPy, scikit-learn, financial modelling, portfolio optimization, Monte Carlo methods, option pricing, scenario analysis, Streamlit, Plotly, and modular application design.
 
 ## Responsible Use
 
