@@ -133,6 +133,34 @@ def test_minimum_variance_weights_match_inverse_variance() -> None:
     assert weights == pytest.approx(expected, abs=0.02)
 
 
+def test_zero_volatility_sharpe_is_undefined() -> None:
+    # Constant returns have no risk. Reporting Sharpe 0 would look like a
+    # finished calculation instead of an undefined ratio.
+    flat = pd.DataFrame({"A": np.ones(12), "B": np.full(12, 2.0)})
+    _, _, ann_vol, sharpe = max_sharpe_weights(flat, random_state=0)
+    assert ann_vol == pytest.approx(0.0, abs=1e-12)
+    assert np.isnan(sharpe)
+
+    cloud = efficient_frontier(flat, n_portfolios=5, random_state=1)
+    assert np.isnan(cloud["sharpes"]).all()
+
+
+def test_max_sharpe_rejects_a_non_positive_start_count(sample_returns: pd.DataFrame) -> None:
+    with pytest.raises(ValueError, match="n_starts"):
+        max_sharpe_weights(sample_returns, random_state=1, n_starts=0)
+
+
+def test_max_sharpe_accepts_a_warm_start(sample_returns: pd.DataFrame) -> None:
+    weights, _, _, sharpe = max_sharpe_weights(
+        sample_returns,
+        random_state=3,
+        n_starts=2,
+        initial_weights=np.array([0.2, 0.3, 0.5]),
+    )
+    assert np.isclose(weights.sum(), 1.0, atol=1e-8)
+    assert np.isfinite(sharpe)
+
+
 def test_non_finite_returns_are_rejected(sample_returns: pd.DataFrame) -> None:
     invalid = sample_returns.copy()
     invalid.iloc[0, 0] = np.nan

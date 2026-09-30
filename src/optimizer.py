@@ -17,6 +17,10 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+# Daily series are annualised with 252 trading days. The return-target
+# constraint below must use this same factor as ``compute_portfolio_metrics``.
+TRADING_DAYS = 252
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Core helpers
@@ -26,7 +30,7 @@ def compute_portfolio_metrics(
     weights: np.ndarray,
     mean_returns: np.ndarray,
     cov_matrix: np.ndarray,
-    trading_days: int = 252,
+    trading_days: int = TRADING_DAYS,
 ) -> tuple[float, float]:
     """Compute annualised portfolio return and volatility."""
     port_return = np.dot(weights, mean_returns) * trading_days
@@ -112,32 +116,56 @@ def max_sharpe_weights(
     risk_free_rate: float = 0.04,
     allow_short: bool = False,
     random_state: Optional[int] = None,
+    n_starts: int = 50,
+    initial_weights: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, float, float, float]:
     """
     Find portfolio weights that maximise the Sharpe ratio.
 
     ``random_state`` makes the multi-start search reproducible for tests,
     notebooks, and demonstrations while preserving stochastic defaults.
+    ``initial_weights`` is tried first when provided (a warm start). It does
+    not replace the random restarts. A zero-volatility result has an undefined
+    Sharpe ratio and is reported as NaN rather than 0.
     """
     _validate_returns(returns)
+    if n_starts < 1:
+        raise ValueError("n_starts must be at least 1")
 
     n = returns.shape[1]
     mean_returns = returns.mean().values
     cov_matrix = returns.cov().values
+    if initial_weights is not None:
+        start = np.asarray(initial_weights, dtype=float)
+        if start.shape != (n,) or not np.isfinite(start).all():
+            raise ValueError("initial_weights must be a finite vector, one weight per asset")
+    else:
+        start = None
+
+    # A zero-volatility sample makes the Sharpe ratio undefined. Skip the
+    # solver so SLSQP does not divide by a zero scale inside its gradient.
+    if float(np.max(np.abs(cov_matrix))) <= 1e-18:
+        weights = np.ones(n) / n
+        ann_ret, ann_vol = compute_portfolio_metrics(weights, mean_returns, cov_matrix)
+        return weights, ann_ret, ann_vol, float("nan")
 
     constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
     bounds = ((-1.0, 1.0) if allow_short else (0.0, 1.0),) * n
     rng = np.random.default_rng(random_state)
 
+    starts: list[np.ndarray] = []
+    if start is not None:
+        starts.append(start)
+    for _ in range(n_starts):
+        if allow_short:
+            starts.append(_sample_bounded_short_weights(n, rng))
+        else:
+            starts.append(rng.dirichlet(np.ones(n)))
+
     best_result = None
     best_sharpe = -np.inf
 
-    for _ in range(50):
-        if allow_short:
-            w0 = _sample_bounded_short_weights(n, rng)
-        else:
-            w0 = rng.dirichlet(np.ones(n))
-
+    for w0 in starts:
         result = minimize(
             _neg_sharpe,
             w0,
@@ -161,7 +189,10 @@ def max_sharpe_weights(
         mean_returns,
         cov_matrix,
     )
-    sharpe = (ann_ret - risk_free_rate) / ann_vol if ann_vol > 0 else 0.0
+    if ann_vol > 1e-12:
+        sharpe = (ann_ret - risk_free_rate) / ann_vol
+    else:
+        sharpe = float("nan")
 
     return weights, ann_ret, ann_vol, float(sharpe)
 
@@ -208,7 +239,7 @@ def efficient_frontier(
         results_ret[i] = ret
         results_vol[i] = vol
         results_sharpe[i] = (
-            (ret - risk_free_rate) / vol if vol > 0 else 0.0
+            (ret - risk_free_rate) / vol if vol > 1e-12 else float("nan")
         )
         results_weights[i] = weights
 
@@ -334,7 +365,7 @@ def minimum_variance_frontier(
             {
                 "type": "eq",
                 "fun": lambda w, level=float(target): (
-                    float(np.dot(w, mean_returns)) * 252.0 - level
+                    float(np.dot(w, mean_returns)) * TRADING_DAYS - level
                 ),
             },
         ]

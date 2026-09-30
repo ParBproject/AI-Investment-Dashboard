@@ -24,6 +24,7 @@ st.set_page_config(
 )
 
 # ── Module imports ─────────────────────────────────────────────────────────────
+from src.backtest import walk_forward_comparison
 from src.data_loader import fetch_price_data, load_csv_prices
 from src.optimizer import (
     efficient_frontier,
@@ -42,6 +43,13 @@ from src.utils import (
     correlation_heatmap,
     returns_histogram,
 )
+
+
+def _format_sharpe(value: float) -> str:
+    """Render a Sharpe ratio. Zero volatility is undefined, not zero."""
+    if value is None or not np.isfinite(value):
+        return "n/a"
+    return f"{value:.3f}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SIDEBAR
@@ -130,8 +138,8 @@ if not run_btn:
         ### Features
         | Module | Description |
         |--------|-------------|
-        | **Portfolio Optimizer** | Mean-variance optimization, Efficient Frontier, Max-Sharpe weights |
-        | **Monte Carlo & Risk** | Simulated price paths, VaR/CVaR, drawdown analysis |
+        | **Portfolio Optimizer** | In-sample mean-variance frontier, plus a walk-forward max-Sharpe check against equal weight |
+        | **Monte Carlo & Risk** | Seeded paths and VaR/CVaR on the in-sample portfolio (not a forecast) |
         | **Options Pricing** | Black-Scholes call/put prices, Greeks, payoff diagrams |
         | **AI What-If Scenarios** | GMM-based synthetic return generation, shock scenarios |
         """)
@@ -163,6 +171,34 @@ if returns.shape[0] < 2 or returns.shape[1] == 0 or not np.isfinite(returns.to_n
     st.stop()
 n_assets = len(prices.columns)
 asset_names = list(prices.columns)
+
+# Fit once, on the full sample, and label every number from that fit as
+# in-sample. The walk-forward block below is the only out-of-sample result.
+with st.spinner("Optimizing and running the walk-forward check…"):
+    frontier_results = efficient_frontier(
+        returns,
+        n_portfolios,
+        risk_free_rate,
+        allow_short,
+        random_state=42,
+    )
+    try:
+        frontier_curve = minimum_variance_frontier(returns, allow_short=allow_short)
+    except ValueError:
+        frontier_curve = None
+    opt_weights, opt_ret, opt_vol, opt_sharpe = max_sharpe_weights(
+        returns,
+        risk_free_rate,
+        allow_short,
+        random_state=42,
+    )
+    port_returns = returns @ opt_weights
+    walk_forward = walk_forward_comparison(
+        returns,
+        risk_free_rate=risk_free_rate,
+        allow_short=allow_short,
+        random_state=42,
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB 0 — OVERVIEW
@@ -212,10 +248,10 @@ with tabs[0]:
     st.subheader("📊 Summary Statistics")
     stats_df = pd.DataFrame({
         "Ticker": asset_names,
-        "Ann. Return (%)": ann_rets.round(2).values,
-        "Ann. Volatility (%)": annual_vols.round(2).values,
-        "Total Return (%)": total_returns.round(2).values,
-        "Sharpe (approx)": (
+        "Ann. mean return (%)": ann_rets.round(2).values,
+        "Ann. volatility (%)": annual_vols.round(2).values,
+        "Total return (%)": total_returns.round(2).values,
+        "Sharpe (full sample)": (
             (ann_rets - risk_free_rate * 100) / annual_vols.where(annual_vols > 0)
         ).round(3).values,
     })
@@ -226,20 +262,17 @@ with tabs[0]:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[1]:
     st.subheader("🎯 Mean-Variance Portfolio Optimization")
-
-    with st.spinner("Computing efficient frontier…"):
-        frontier_results = efficient_frontier(
-            returns, n_portfolios, risk_free_rate, allow_short
-        )
-        frontier_curve = minimum_variance_frontier(returns, allow_short=allow_short)
-        opt_weights, opt_ret, opt_vol, opt_sharpe = max_sharpe_weights(
-            returns, risk_free_rate, allow_short
-        )
+    st.caption(
+        "In-sample: the mean, covariance, Sharpe ratio, and frontier all use "
+        "this full date range. Return is the arithmetic mean times 252, not "
+        "compounded growth. These numbers describe the sample. They are not a "
+        "forecast and they are not a backtest."
+    )
 
     col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Max Sharpe Ratio", f"{opt_sharpe:.3f}")
-    col_b.metric("Expected Annual Return", format_pct(opt_ret))
-    col_c.metric("Expected Annual Volatility", format_pct(opt_vol))
+    col_a.metric("In-sample Sharpe", _format_sharpe(opt_sharpe))
+    col_b.metric("In-sample annualised mean", format_pct(opt_ret))
+    col_c.metric("In-sample annualised volatility", format_pct(opt_vol))
 
     st.markdown("---")
     col_left2, col_right2 = st.columns([3, 2])
@@ -260,13 +293,14 @@ with tabs[1]:
             ),
             name="Random Portfolios",
         ))
-        fig_ef.add_trace(go.Scatter(
-            x=frontier_curve["vols"] * 100,
-            y=frontier_curve["rets"] * 100,
-            mode="lines",
-            line=dict(color="#FFA15A", width=2.5),
-            name="Efficient Frontier",
-        ))
+        if frontier_curve is not None:
+            fig_ef.add_trace(go.Scatter(
+                x=frontier_curve["vols"] * 100,
+                y=frontier_curve["rets"] * 100,
+                mode="lines",
+                line=dict(color="#FFA15A", width=2.5),
+                name="Efficient Frontier",
+            ))
         # Highlight max-Sharpe
         fig_ef.add_trace(go.Scatter(
             x=[opt_vol * 100], y=[opt_ret * 100],
@@ -277,9 +311,9 @@ with tabs[1]:
             name="Optimal Portfolio",
         ))
         fig_ef.update_layout(
-            title="Efficient Frontier",
+            title="In-sample Efficient Frontier",
             xaxis_title="Volatility (%)",
-            yaxis_title="Expected Return (%)",
+            yaxis_title="Annualised mean return (%)",
             template="plotly_dark", height=420,
         )
         st.plotly_chart(fig_ef, width="stretch")
@@ -296,18 +330,73 @@ with tabs[1]:
     }).sort_values("Weight (%)", ascending=False)
     st.dataframe(w_df, width="stretch", hide_index=True)
 
+    st.markdown("---")
+    st.subheader("Walk-forward check vs equal weight")
+    if walk_forward is None:
+        st.info(
+            "Need at least 65 return observations for a walk-forward check "
+            "(63 days of history and two held-out days). The numbers above are in-sample only."
+        )
+    else:
+        strategy = walk_forward["strategy"]
+        benchmark = walk_forward["benchmark"]
+        st.caption(
+            f"Trailing {walk_forward['lookback']} trading days, rebalanced every "
+            f"{walk_forward['rebalance_every']} trading days. Each weight vector "
+            f"is fit only on returns before the rebalance and earns the next day's "
+            f"return. Costs are {walk_forward['commission_bps']:.0f} bps commission "
+            f"plus {walk_forward['slippage_bps']:.0f} bps slippage on purchases and "
+            f"on sales. Equal weight trades on the same dates, so the gap is the "
+            f"weighting rule, not the schedule. {strategy['n_days']} out-of-sample "
+            f"days, {walk_forward['n_rebalances']} rebalances. A short window is a "
+            "noisy estimate, not a track record."
+        )
+        oos_cols = st.columns(4)
+        oos_cols[0].metric("Walk-forward CAGR (net)", format_pct(strategy["cagr"]))
+        oos_cols[1].metric("Walk-forward Sharpe", _format_sharpe(strategy["sharpe"]))
+        oos_cols[2].metric("Equal-weight CAGR (net)", format_pct(benchmark["cagr"]))
+        oos_cols[3].metric("Equal-weight Sharpe", _format_sharpe(benchmark["sharpe"]))
+        oos_cols_b = st.columns(4)
+        oos_cols_b[0].metric("Walk-forward max drawdown", format_pct(strategy["max_drawdown"]))
+        oos_cols_b[1].metric("Equal-weight max drawdown", format_pct(benchmark["max_drawdown"]))
+        oos_cols_b[2].metric("Walk-forward CAGR (gross)", format_pct(strategy["cagr_gross"]))
+        oos_cols_b[3].metric(
+            "Avg. gross turnover",
+            "n/a" if not np.isfinite(strategy["avg_turnover"]) else f"{strategy['avg_turnover']:.2f}",
+        )
+
+        fig_wf = go.Figure()
+        fig_wf.add_trace(go.Scatter(
+            x=walk_forward["strategy_wealth"].index,
+            y=walk_forward["strategy_wealth"],
+            name="Max Sharpe (net)",
+            line=dict(color="#FFA15A", width=2),
+        ))
+        fig_wf.add_trace(go.Scatter(
+            x=walk_forward["benchmark_wealth"].index,
+            y=walk_forward["benchmark_wealth"],
+            name="Equal weight (net)",
+            line=dict(color="#19D3F3", width=2),
+        ))
+        fig_wf.update_layout(
+            title="Walk-forward wealth, net of costs (start = 1)",
+            xaxis_title="Date",
+            yaxis_title="Wealth",
+            template="plotly_dark",
+            height=380,
+        )
+        st.plotly_chart(fig_wf, width="stretch")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB 2 — MONTE CARLO & RISK
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[2]:
     st.subheader("🎲 Monte Carlo Simulation & Risk Metrics")
     st.caption(
-        "Each step uses the historical daily mean and sample volatility "
-        "(not annualised figures). Paths are seeded so a rerun matches."
+        "Each step resamples the in-sample daily mean and sample volatility of "
+        "the full-sample max-Sharpe portfolio (not annualised figures, and not "
+        "an out-of-sample forecast). Paths are seeded so a rerun matches."
     )
-
-    # Portfolio returns using optimized weights
-    port_returns = returns @ opt_weights
 
     with st.spinner("Running Monte Carlo…"):
         last_price = 1.0  # normalized portfolio value
@@ -319,10 +408,10 @@ with tabs[2]:
     var_99, cvar_99 = var_cvar(port_returns, 0.99)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("VaR 95% (daily)", format_pct(var_95))
-    c2.metric("CVaR 95% (daily)", format_pct(cvar_95))
-    c3.metric("VaR 99% (daily)", format_pct(var_99))
-    c4.metric("CVaR 99% (daily)", format_pct(cvar_99))
+    c1.metric("VaR 95% (daily, in-sample)", format_pct(var_95))
+    c2.metric("CVaR 95% (daily, in-sample)", format_pct(cvar_95))
+    c3.metric("VaR 99% (daily, in-sample)", format_pct(var_99))
+    c4.metric("CVaR 99% (daily, in-sample)", format_pct(cvar_99))
 
     st.markdown("---")
     col_mc1, col_mc2 = st.columns([3, 2])
@@ -351,7 +440,8 @@ with tabs[2]:
                                               dash="dash")))
         fig_mc.update_layout(
             title=f"Monte Carlo Simulation ({n_mc_paths} paths, 1-year horizon)",
-            xaxis_title="Trading Days", yaxis_title="Portfolio Value ($)",
+            xaxis_title="Trading Days",
+            yaxis_title="Portfolio value (start = 1)",
             template="plotly_dark", height=420,
         )
         st.plotly_chart(fig_mc, width="stretch")
@@ -366,8 +456,9 @@ with tabs[2]:
     # Risk metrics table
     st.subheader("📋 Risk Summary")
     risk_data = {
-        "Metric": ["Ann. Return", "Ann. Volatility",
-                   "VaR 95%", "CVaR 95%", "VaR 99%", "CVaR 99%",
+        "Metric": ["Ann. mean return (in-sample)", "Ann. volatility (in-sample)",
+                   "VaR 95% (daily, in-sample)", "CVaR 95% (daily, in-sample)",
+                   "VaR 99% (daily, in-sample)", "CVaR 99% (daily, in-sample)",
                    "Max Simulated Gain", "Max Simulated Loss"],
         "Value": [
             format_pct(port_returns.mean() * 252),
@@ -434,8 +525,8 @@ with tabs[3]:
     fig_vega.add_trace(go.Scatter(x=vols_range * 100, y=put_prices_vol,
                                    name="Put Price", line=dict(color="red")))
     fig_vega.update_layout(
-        title="Option Price vs Implied Volatility",
-        xaxis_title="Volatility (%)", yaxis_title="Price ($)",
+        title="Option Price vs Volatility Input",
+        xaxis_title="Volatility input (%)", yaxis_title="Price ($)",
         template="plotly_dark", height=320,
     )
     st.plotly_chart(fig_vega, width="stretch")
@@ -462,8 +553,10 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("🤖 AI-Driven What-If Scenario Analysis")
     st.caption(
-        "Uses Gaussian Mixture Models (GMM) to learn the return distribution "
-        "and generate synthetic price paths with user-defined shocks."
+        "Fits a Gaussian mixture on the full in-sample return series of the "
+        "max-Sharpe portfolio, then draws synthetic paths. A positive rate "
+        "change is subtracted from each daily draw (annual decimal / 252); it "
+        "is not interest earned. The market shock is added once, on day 1."
     )
 
     try:
