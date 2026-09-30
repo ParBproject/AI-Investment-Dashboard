@@ -46,6 +46,8 @@ def test_csv_analysis_runs_without_a_download() -> None:
     assert not app.exception
     assert app.error == []
     labels = [metric.label for metric in app.metric]
-    assert "CVaR 99% (daily)" in labels
-    assert "Max Sharpe Ratio" in labels
+    assert "CVaR 99% (daily, in-sample)" in labels
+    assert "In-sample Sharpe" in labels
+    assert "Walk-forward Sharpe" in labels
+    assert "Equal-weight Sharpe" in labels
     assert "Call Price" in labels

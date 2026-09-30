@@ -19,11 +19,14 @@ An interactive financial-analytics application combining market-data exploration
 | Area | What the application provides |
 |---|---|
 | Market overview | Normalized prices, returns, correlations, and descriptive statistics |
-| Portfolio optimization | Minimum-variance efficient frontier, maximum-Sharpe allocation, random feasible portfolios, and weight visualization |
-| Monte Carlo | Seeded portfolio paths from daily (not annualised) drift and volatility, plus distribution-based risk measures |
-| Options | Black–Scholes prices and Greeks (vega and rho per 1 percentage point, theta per calendar day) |
-| Scenario analysis | Gaussian-mixture paths with a one-day market shock and an annual rate shock scaled by 1/252 |
+| Portfolio optimization | In-sample minimum-variance frontier and maximum-Sharpe weights. The mean and covariance are fit on the same window the chart reports. The return is an arithmetic mean (mean × 252), not a CAGR |
+| Walk-forward check | Max-Sharpe versus equal weight. Trailing 252 trading days when the sample is longer than that, otherwise 63 (the file needs at least 65 returns). Rebalance every 21 trading days. Weights earn the next day's return. 5 bps commission plus 5 bps slippage on purchases and on sales |
+| Monte Carlo | Seeded paths that resample the in-sample portfolio's daily mean and volatility. Not an out-of-sample forecast |
+| Options | Black–Scholes prices and Greeks (vega and rho per 1 percentage point, theta per calendar day). The volatility chart is the pricing input, not an implied-volatility solve |
+| Scenario analysis | Gaussian-mixture paths fit on that same in-sample series. A positive rate input is subtracted from each daily draw (annual decimal / 252). The market shock is added once, on day 1 |
 | Reporting | Interactive Plotly charts and decision-oriented KPI cards |
+
+The screenshots show the overview, in-sample frontier, Monte Carlo, options, and scenarios. The walk-forward panel sits on the optimizer tab and is not in those images.
 
 ## Application Preview
 

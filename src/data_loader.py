@@ -69,7 +69,8 @@ def fetch_price_data(
     start : str
         Start date in 'YYYY-MM-DD' format.
     end : str
-        End date in 'YYYY-MM-DD' format.
+        End date in 'YYYY-MM-DD' format, inclusive. yfinance's own ``end``
+        argument is exclusive; this function shifts it by one day.
 
     Returns
     -------
@@ -93,7 +94,7 @@ def fetch_price_data(
         raw = yf.download(
             list(tickers),
             start=start,
-            end=end,
+            end=_yfinance_exclusive_end(end),
             auto_adjust=True,
             progress=False,
         )
@@ -101,6 +102,23 @@ def fetch_price_data(
         raise ValueError(f"Error fetching data: {exc}") from exc
 
     return extract_close_prices(raw, tuple(tickers))
+
+
+def _yfinance_exclusive_end(end: str) -> str:
+    """
+    Convert an inclusive end date to the exclusive bound yfinance expects.
+
+    ``yf.download(..., end="2024-12-31")`` stops on 2024-12-30. The sidebar
+    date is the last session the user asked for, so the request uses the
+    following calendar day.
+    """
+    try:
+        day = pd.Timestamp(end)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"End date is not a valid date: {end}") from exc
+    if pd.isna(day):
+        raise ValueError(f"End date is not a valid date: {end}")
+    return (day.normalize() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def load_csv_prices(uploaded_file) -> pd.DataFrame:

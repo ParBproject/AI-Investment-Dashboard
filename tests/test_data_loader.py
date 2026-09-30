@@ -3,6 +3,8 @@ from io import StringIO
 import pandas as pd
 import pytest
 
+import yfinance as yf
+
 from src.data_loader import extract_close_prices, fetch_price_data, load_csv_prices
 
 
@@ -73,6 +75,33 @@ def test_load_csv_prices_parses_dates_and_sorts() -> None:
     assert list(prices.columns) == ["AAPL", "MSFT"]
     assert list(prices.index) == list(_dates())
     assert prices.iloc[0, 0] == 10
+
+
+def test_fetch_includes_the_selected_end_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    # yfinance treats ``end`` as exclusive, so an unshifted 2024-12-31 request
+    # would stop on 2024-12-30 and drop the session the user selected.
+    captured: dict[str, str] = {}
+
+    def fake_download(tickers, start, end, auto_adjust, progress):
+        captured["start"] = start
+        captured["end"] = end
+        index = _dates()
+        columns = pd.MultiIndex.from_product([["Close"], ["AAPL"]])
+        return pd.DataFrame([[10.0], [11.0], [12.0]], index=index, columns=columns)
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    prices = fetch_price_data(("AAPL",), "2024-01-02", "2024-01-04")
+    assert captured["end"] == "2024-01-05"
+    assert prices.index[-1] == pd.Timestamp("2024-01-04")
+
+
+def test_fetch_rejects_an_unparseable_end_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_download(*args, **kwargs):
+        raise AssertionError("download should not run when the end date is invalid")
+
+    monkeypatch.setattr(yf, "download", fail_download)
+    with pytest.raises(ValueError, match="End date"):
+        fetch_price_data(("AAPL",), "2024-01-02", "not-a-date")
 
 
 def test_load_csv_prices_rejects_a_file_with_no_numbers() -> None:
