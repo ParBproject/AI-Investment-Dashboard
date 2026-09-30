@@ -2,8 +2,8 @@
 AI-Driven Investment Dashboard
 ================================
 A comprehensive Streamlit web application combining portfolio optimization,
-Black-Scholes option pricing, Monte Carlo simulations, and AI-driven
-"what-if" scenario generation.
+Black-Scholes option pricing, Monte Carlo simulations, and Gaussian-mixture
+what-if scenario generation.
 
 ⚠️ DISCLAIMER: For educational/simulation purposes only. Not financial advice.
 Backtest results do not guarantee future performance.
@@ -13,11 +13,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
-import warnings
-
-warnings.filterwarnings("ignore")
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -27,21 +23,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Lazy imports (heavy libs loaded only when needed) ──────────────────────────
-@st.cache_resource
-def load_heavy_libs():
-    import yfinance as yf
-    from scipy.optimize import minimize
-    from scipy.stats import norm
-    from sklearn.mixture import GaussianMixture
-    return yf, minimize, norm, GaussianMixture
-
 # ── Module imports ─────────────────────────────────────────────────────────────
+from src.backtest import walk_forward_comparison
 from src.data_loader import fetch_price_data, load_csv_prices
 from src.optimizer import (
-    compute_portfolio_metrics,
     efficient_frontier,
     max_sharpe_weights,
+    minimum_variance_frontier,
 )
 from src.models import (
     black_scholes,
@@ -56,12 +44,18 @@ from src.utils import (
     returns_histogram,
 )
 
+
+def _format_sharpe(value: float) -> str:
+    """Render a Sharpe ratio. Zero volatility is undefined, not zero."""
+    if value is None or not np.isfinite(value):
+        return "n/a"
+    return f"{value:.3f}"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.image("https://via.placeholder.com/260x60?text=AI+Investment+Dashboard",
-             use_column_width=True)
+    st.markdown("### AI Investment Dashboard")
     st.markdown("---")
     st.header("⚙️ Configuration")
 
@@ -100,16 +94,16 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🔮 Options Pricing")
-    opt_spot = st.number_input("Spot Price (S)", value=150.0)
-    opt_strike = st.number_input("Strike Price (K)", value=155.0)
-    opt_maturity = st.number_input("Maturity (years, T)", value=0.5,
-                                   step=0.25)
-    opt_vol = st.number_input("Volatility (σ, %)", value=25.0) / 100
+    opt_spot = st.number_input("Spot Price (S)", value=150.0, min_value=0.01)
+    opt_strike = st.number_input("Strike Price (K)", value=155.0, min_value=0.01)
+    opt_maturity = st.number_input(
+        "Maturity (years, T)", value=0.5, min_value=0.0, step=0.25
+    )
+    opt_vol = st.number_input("Volatility (σ, %)", value=25.0, min_value=0.0) / 100
     opt_r = st.number_input("Risk-Free Rate for Option (%)",
                             value=4.5) / 100
 
-    run_btn = st.button("🚀 Run Analysis", type="primary",
-                        use_container_width=True)
+    run_btn = st.button("🚀 Run Analysis", type="primary", width="stretch")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HEADER
@@ -144,8 +138,8 @@ if not run_btn:
         ### Features
         | Module | Description |
         |--------|-------------|
-        | **Portfolio Optimizer** | Mean-variance optimization, Efficient Frontier, Max-Sharpe weights |
-        | **Monte Carlo & Risk** | Simulated price paths, VaR/CVaR, drawdown analysis |
+        | **Portfolio Optimizer** | In-sample mean-variance frontier, plus a walk-forward max-Sharpe check against equal weight |
+        | **Monte Carlo & Risk** | Seeded paths and VaR/CVaR on the in-sample portfolio (not a forecast) |
         | **Options Pricing** | Black-Scholes call/put prices, Greeks, payoff diagrams |
         | **What-If Scenarios** | Gaussian-mixture synthetic returns and shock scenarios |
         """)
@@ -153,22 +147,58 @@ if not run_btn:
 
 # ── Load prices ────────────────────────────────────────────────────────────────
 with st.spinner("Fetching price data…"):
-    if input_mode == "Upload CSV" and uploaded is not None:
-        prices = load_csv_prices(uploaded)
-        tickers = list(prices.columns)
-    elif tickers:
-        prices = load_data(tuple(tickers), start_date, end_date)
-    else:
-        st.error("Please enter tickers or upload a CSV.")
+    try:
+        if input_mode == "Upload CSV":
+            if uploaded is None:
+                st.error("Please upload a CSV file.")
+                st.stop()
+            prices = load_csv_prices(uploaded)
+        elif tickers:
+            prices = load_data(tuple(tickers), start_date, end_date)
+        else:
+            st.error("Please enter tickers or upload a CSV.")
+            st.stop()
+    except ValueError as exc:
+        st.error(str(exc))
         st.stop()
 
-if prices is None or prices.empty:
-    st.error("Could not retrieve data. Check tickers/dates and try again.")
-    st.stop()
-
 returns = prices.pct_change().dropna()
+if returns.shape[0] < 2 or returns.shape[1] == 0 or not np.isfinite(returns.to_numpy()).all():
+    st.error(
+        "Need at least two dates and finite prices for every asset. "
+        "Widen the date range or check the file for zeros and gaps."
+    )
+    st.stop()
 n_assets = len(prices.columns)
 asset_names = list(prices.columns)
+
+# Fit once, on the full sample, and label every number from that fit as
+# in-sample. The walk-forward block below is the only out-of-sample result.
+with st.spinner("Optimizing and running the walk-forward check…"):
+    frontier_results = efficient_frontier(
+        returns,
+        n_portfolios,
+        risk_free_rate,
+        allow_short,
+        random_state=42,
+    )
+    try:
+        frontier_curve = minimum_variance_frontier(returns, allow_short=allow_short)
+    except ValueError:
+        frontier_curve = None
+    opt_weights, opt_ret, opt_vol, opt_sharpe = max_sharpe_weights(
+        returns,
+        risk_free_rate,
+        allow_short,
+        random_state=42,
+    )
+    port_returns = returns @ opt_weights
+    walk_forward = walk_forward_comparison(
+        returns,
+        risk_free_rate=risk_free_rate,
+        allow_short=allow_short,
+        random_state=42,
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB 0 — OVERVIEW
@@ -207,43 +237,42 @@ with tabs[0]:
             xaxis_title="Date", yaxis_title="Indexed Price",
             template="plotly_dark", height=380,
         )
-        st.plotly_chart(fig_norm, use_container_width=True)
+        st.plotly_chart(fig_norm, width="stretch")
 
     with col_right:
         # Correlation heatmap
         fig_corr = correlation_heatmap(returns, asset_names)
-        st.plotly_chart(fig_corr, use_container_width=True)
+        st.plotly_chart(fig_corr, width="stretch")
 
     # Summary stats table
     st.subheader("📊 Summary Statistics")
     stats_df = pd.DataFrame({
         "Ticker": asset_names,
-        "Ann. Return (%)": ann_rets.round(2).values,
-        "Ann. Volatility (%)": annual_vols.round(2).values,
-        "Total Return (%)": total_returns.round(2).values,
-        "Sharpe (approx)": ((ann_rets - risk_free_rate * 100) /
-                            annual_vols).round(3).values,
+        "Ann. mean return (%)": ann_rets.round(2).values,
+        "Ann. volatility (%)": annual_vols.round(2).values,
+        "Total return (%)": total_returns.round(2).values,
+        "Sharpe (full sample)": (
+            (ann_rets - risk_free_rate * 100) / annual_vols.where(annual_vols > 0)
+        ).round(3).values,
     })
-    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+    st.dataframe(stats_df, width="stretch", hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB 1 — PORTFOLIO OPTIMIZER
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[1]:
     st.subheader("🎯 Mean-Variance Portfolio Optimization")
-
-    with st.spinner("Computing efficient frontier…"):
-        frontier_results = efficient_frontier(
-            returns, n_portfolios, risk_free_rate, allow_short
-        )
-        opt_weights, opt_ret, opt_vol, opt_sharpe = max_sharpe_weights(
-            returns, risk_free_rate, allow_short
-        )
+    st.caption(
+        "In-sample: the mean, covariance, Sharpe ratio, and frontier all use "
+        "this full date range. Return is the arithmetic mean times 252, not "
+        "compounded growth. These numbers describe the sample. They are not a "
+        "forecast and they are not a backtest."
+    )
 
     col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Max Sharpe Ratio", f"{opt_sharpe:.3f}")
-    col_b.metric("Expected Annual Return", format_pct(opt_ret))
-    col_c.metric("Expected Annual Volatility", format_pct(opt_vol))
+    col_a.metric("In-sample Sharpe", _format_sharpe(opt_sharpe))
+    col_b.metric("In-sample annualised mean", format_pct(opt_ret))
+    col_c.metric("In-sample annualised volatility", format_pct(opt_vol))
 
     st.markdown("---")
     col_left2, col_right2 = st.columns([3, 2])
@@ -264,6 +293,14 @@ with tabs[1]:
             ),
             name="Random Portfolios",
         ))
+        if frontier_curve is not None:
+            fig_ef.add_trace(go.Scatter(
+                x=frontier_curve["vols"] * 100,
+                y=frontier_curve["rets"] * 100,
+                mode="lines",
+                line=dict(color="#FFA15A", width=2.5),
+                name="Efficient Frontier",
+            ))
         # Highlight max-Sharpe
         fig_ef.add_trace(go.Scatter(
             x=[opt_vol * 100], y=[opt_ret * 100],
@@ -274,16 +311,16 @@ with tabs[1]:
             name="Optimal Portfolio",
         ))
         fig_ef.update_layout(
-            title="Efficient Frontier",
+            title="In-sample Efficient Frontier",
             xaxis_title="Volatility (%)",
-            yaxis_title="Expected Return (%)",
+            yaxis_title="Annualised mean return (%)",
             template="plotly_dark", height=420,
         )
-        st.plotly_chart(fig_ef, use_container_width=True)
+        st.plotly_chart(fig_ef, width="stretch")
 
     with col_right2:
         fig_pie = weights_pie_chart(opt_weights, asset_names)
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
 
     # Weights table
     st.subheader("Optimal Weights")
@@ -291,29 +328,90 @@ with tabs[1]:
         "Asset": asset_names,
         "Weight (%)": (opt_weights * 100).round(2),
     }).sort_values("Weight (%)", ascending=False)
-    st.dataframe(w_df, use_container_width=True, hide_index=True)
+    st.dataframe(w_df, width="stretch", hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Walk-forward check vs equal weight")
+    if walk_forward is None:
+        st.info(
+            "Need at least 65 return observations for a walk-forward check "
+            "(63 days of history and two held-out days). The numbers above are in-sample only."
+        )
+    else:
+        strategy = walk_forward["strategy"]
+        benchmark = walk_forward["benchmark"]
+        st.caption(
+            f"Trailing {walk_forward['lookback']} trading days, rebalanced every "
+            f"{walk_forward['rebalance_every']} trading days. Each weight vector "
+            f"is fit only on returns before the rebalance and earns the next day's "
+            f"return. Costs are {walk_forward['commission_bps']:.0f} bps commission "
+            f"plus {walk_forward['slippage_bps']:.0f} bps slippage on purchases and "
+            f"on sales. Equal weight trades on the same dates, so the gap is the "
+            f"weighting rule, not the schedule. {strategy['n_days']} out-of-sample "
+            f"days, {walk_forward['n_rebalances']} rebalances. A short window is a "
+            "noisy estimate, not a track record."
+        )
+        oos_cols = st.columns(4)
+        oos_cols[0].metric("Walk-forward CAGR (net)", format_pct(strategy["cagr"]))
+        oos_cols[1].metric("Walk-forward Sharpe", _format_sharpe(strategy["sharpe"]))
+        oos_cols[2].metric("Equal-weight CAGR (net)", format_pct(benchmark["cagr"]))
+        oos_cols[3].metric("Equal-weight Sharpe", _format_sharpe(benchmark["sharpe"]))
+        oos_cols_b = st.columns(4)
+        oos_cols_b[0].metric("Walk-forward max drawdown", format_pct(strategy["max_drawdown"]))
+        oos_cols_b[1].metric("Equal-weight max drawdown", format_pct(benchmark["max_drawdown"]))
+        oos_cols_b[2].metric("Walk-forward CAGR (gross)", format_pct(strategy["cagr_gross"]))
+        oos_cols_b[3].metric(
+            "Avg. gross turnover",
+            "n/a" if not np.isfinite(strategy["avg_turnover"]) else f"{strategy['avg_turnover']:.2f}",
+        )
+
+        fig_wf = go.Figure()
+        fig_wf.add_trace(go.Scatter(
+            x=walk_forward["strategy_wealth"].index,
+            y=walk_forward["strategy_wealth"],
+            name="Max Sharpe (net)",
+            line=dict(color="#FFA15A", width=2),
+        ))
+        fig_wf.add_trace(go.Scatter(
+            x=walk_forward["benchmark_wealth"].index,
+            y=walk_forward["benchmark_wealth"],
+            name="Equal weight (net)",
+            line=dict(color="#19D3F3", width=2),
+        ))
+        fig_wf.update_layout(
+            title="Walk-forward wealth, net of costs (start = 1)",
+            xaxis_title="Date",
+            yaxis_title="Wealth",
+            template="plotly_dark",
+            height=380,
+        )
+        st.plotly_chart(fig_wf, width="stretch")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB 2 — MONTE CARLO & RISK
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[2]:
     st.subheader("🎲 Monte Carlo Simulation & Risk Metrics")
-
-    # Portfolio returns using optimized weights
-    port_returns = returns @ opt_weights
+    st.caption(
+        "Each step resamples the in-sample daily mean and sample volatility of "
+        "the full-sample max-Sharpe portfolio (not annualised figures, and not "
+        "an out-of-sample forecast). Paths are seeded so a rerun matches."
+    )
 
     with st.spinner("Running Monte Carlo…"):
         last_price = 1.0  # normalized portfolio value
-        paths = monte_carlo_paths(port_returns, n_mc_paths, 252, last_price)
+        paths = monte_carlo_paths(
+            port_returns, n_mc_paths, 252, last_price, seed=42
+        )
 
     var_95, cvar_95 = var_cvar(port_returns, 0.95)
     var_99, cvar_99 = var_cvar(port_returns, 0.99)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("VaR 95% (daily)", format_pct(var_95))
-    c2.metric("CVaR 95% (daily)", format_pct(cvar_95))
-    c3.metric("VaR 99% (daily)", format_pct(var_99))
-    c4.metric("CVaR 99% (daily)", format_pct(var_99))
+    c1.metric("VaR 95% (daily, in-sample)", format_pct(var_95))
+    c2.metric("CVaR 95% (daily, in-sample)", format_pct(cvar_95))
+    c3.metric("VaR 99% (daily, in-sample)", format_pct(var_99))
+    c4.metric("CVaR 99% (daily, in-sample)", format_pct(cvar_99))
 
     st.markdown("---")
     col_mc1, col_mc2 = st.columns([3, 2])
@@ -342,23 +440,25 @@ with tabs[2]:
                                               dash="dash")))
         fig_mc.update_layout(
             title=f"Monte Carlo Simulation ({n_mc_paths} paths, 1-year horizon)",
-            xaxis_title="Trading Days", yaxis_title="Portfolio Value ($)",
+            xaxis_title="Trading Days",
+            yaxis_title="Portfolio value (start = 1)",
             template="plotly_dark", height=420,
         )
-        st.plotly_chart(fig_mc, use_container_width=True)
+        st.plotly_chart(fig_mc, width="stretch")
 
     with col_mc2:
         # Final-value distribution
         final_vals = paths[-1, :]
         fig_hist = returns_histogram(final_vals,
                                      title="Distribution of Final Portfolio Value")
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
     # Risk metrics table
     st.subheader("📋 Risk Summary")
     risk_data = {
-        "Metric": ["Ann. Return", "Ann. Volatility",
-                   "VaR 95%", "CVaR 95%", "VaR 99%", "CVaR 99%",
+        "Metric": ["Ann. mean return (in-sample)", "Ann. volatility (in-sample)",
+                   "VaR 95% (daily, in-sample)", "CVaR 95% (daily, in-sample)",
+                   "VaR 99% (daily, in-sample)", "CVaR 99% (daily, in-sample)",
                    "Max Simulated Gain", "Max Simulated Loss"],
         "Value": [
             format_pct(port_returns.mean() * 252),
@@ -369,7 +469,7 @@ with tabs[2]:
             format_pct(final_vals.min() - 1),
         ],
     }
-    st.dataframe(pd.DataFrame(risk_data), use_container_width=True,
+    st.dataframe(pd.DataFrame(risk_data), width="stretch",
                  hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -387,7 +487,7 @@ with tabs[3]:
     c2.metric("Put Price", f"${put_price:.4f}")
     c3.metric("Delta (Call)", f"{greeks['delta_call']:.4f}")
     c4.metric("Gamma", f"{greeks['gamma']:.4f}")
-    c5.metric("Theta (Call)", f"{greeks['theta_call']:.4f}")
+    c5.metric("Theta (Call, per day)", f"{greeks['theta_call']:.4f}")
 
     st.markdown("---")
 
@@ -410,7 +510,7 @@ with tabs[3]:
         yaxis_title="P&L ($)",
         template="plotly_dark", height=380,
     )
-    st.plotly_chart(fig_opt, use_container_width=True)
+    st.plotly_chart(fig_opt, width="stretch")
 
     # Greeks vs Spot
     vols_range = np.linspace(0.05, 0.80, 100)
@@ -425,11 +525,11 @@ with tabs[3]:
     fig_vega.add_trace(go.Scatter(x=vols_range * 100, y=put_prices_vol,
                                    name="Put Price", line=dict(color="red")))
     fig_vega.update_layout(
-        title="Option Price vs Implied Volatility",
-        xaxis_title="Volatility (%)", yaxis_title="Price ($)",
+        title="Option Price vs Volatility Input",
+        xaxis_title="Volatility input (%)", yaxis_title="Price ($)",
         template="plotly_dark", height=320,
     )
-    st.plotly_chart(fig_vega, use_container_width=True)
+    st.plotly_chart(fig_vega, width="stretch")
 
     # Greeks table
     st.subheader("Greeks Summary")
@@ -439,33 +539,42 @@ with tabs[3]:
         "Delta (Call)": f"{greeks['delta_call']:.4f}",
         "Delta (Put)": f"{greeks['delta_put']:.4f}",
         "Gamma": f"{greeks['gamma']:.6f}",
-        "Theta (Call)": f"{greeks['theta_call']:.4f}",
-        "Theta (Put)": f"{greeks['theta_put']:.4f}",
-        "Vega": f"{greeks['vega']:.4f}",
-        "Rho (Call)": f"{greeks['rho_call']:.4f}",
-        "Rho (Put)": f"{greeks['rho_put']:.4f}",
+        "Theta (Call, per day)": f"{greeks['theta_call']:.4f}",
+        "Theta (Put, per day)": f"{greeks['theta_put']:.4f}",
+        "Vega (per 1% vol)": f"{greeks['vega']:.4f}",
+        "Rho (Call, per 1%)": f"{greeks['rho_call']:.4f}",
+        "Rho (Put, per 1%)": f"{greeks['rho_put']:.4f}",
     }])
-    st.dataframe(greeks_df, use_container_width=True, hide_index=True)
+    st.dataframe(greeks_df, width="stretch", hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 4 — AI WHAT-IF SCENARIOS
+#  TAB 4 — GAUSSIAN-MIXTURE WHAT-IF SCENARIOS
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[4]:
     st.subheader("What-If Scenario Analysis")
     st.caption(
-        "Uses Gaussian Mixture Models (GMM) to learn the return distribution "
-        "and generate synthetic price paths with user-defined shocks."
+        "Fits a Gaussian mixture on the full in-sample return series of the "
+        "max-Sharpe portfolio, then draws synthetic paths. A positive rate "
+        "change is subtracted from each daily draw (annual decimal / 252); it "
+        "is not interest earned. The market shock is added once, on day 1."
     )
 
-    with st.spinner("Fitting GMM and generating scenarios…"):
-        scenario_paths, scenario_normal = gmm_scenario_returns(
-            port_returns,
-            n_paths=n_mc_paths,
-            horizon=252,
-            shock_pct=shock_pct / 100,
-            rate_shock=rate_hike / 10000,
-            risk_free_rate=risk_free_rate,
-        )
+    try:
+        with st.spinner("Fitting GMM and generating scenarios…"):
+            scenario_paths, scenario_normal = gmm_scenario_returns(
+                port_returns,
+                n_paths=n_mc_paths,
+                horizon=252,
+                shock_pct=shock_pct / 100,
+                rate_shock=rate_hike / 10000,
+                seed=42,
+            )
+    except ValueError as exc:
+        st.error(str(exc))
+        scenario_paths = None
+
+    if scenario_paths is None:
+        st.stop()
 
     # Comparison chart
     x_days = list(range(scenario_paths.shape[0]))
@@ -503,7 +612,7 @@ with tabs[4]:
 
     fig_scen.update_layout(template="plotly_dark", height=460,
                             title="Scenario Comparison: Normal vs Shocked")
-    st.plotly_chart(fig_scen, use_container_width=True)
+    st.plotly_chart(fig_scen, width="stretch")
 
     # Before/after metrics table
     st.subheader("📋 Before vs After Shock Metrics")
@@ -524,7 +633,7 @@ with tabs[4]:
         scenario_metrics(final_normal, "Normal"),
         scenario_metrics(final_shocked, f"Shock {shock_pct:+}% / {rate_hike:+}bps"),
     ])
-    st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+    st.dataframe(metrics_df, width="stretch", hide_index=True)
 
     # Distribution comparison
     fig_dist = go.Figure()
@@ -540,7 +649,7 @@ with tabs[4]:
         xaxis_title="1-Year Return (%)", yaxis_title="Frequency",
         template="plotly_dark", height=360,
     )
-    st.plotly_chart(fig_dist, use_container_width=True)
+    st.plotly_chart(fig_dist, width="stretch")
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown("---")

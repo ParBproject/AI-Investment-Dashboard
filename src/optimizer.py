@@ -17,6 +17,10 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+# Daily series are annualised with 252 trading days. The return-target
+# constraint below must use this same factor as ``compute_portfolio_metrics``.
+TRADING_DAYS = 252
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Core helpers
@@ -26,7 +30,7 @@ def compute_portfolio_metrics(
     weights: np.ndarray,
     mean_returns: np.ndarray,
     cov_matrix: np.ndarray,
-    trading_days: int = 252,
+    trading_days: int = TRADING_DAYS,
 ) -> tuple[float, float]:
     """Compute annualised portfolio return and volatility."""
     port_return = np.dot(weights, mean_returns) * trading_days
@@ -112,32 +116,56 @@ def max_sharpe_weights(
     risk_free_rate: float = 0.04,
     allow_short: bool = False,
     random_state: Optional[int] = None,
+    n_starts: int = 50,
+    initial_weights: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, float, float, float]:
     """
     Find portfolio weights that maximise the Sharpe ratio.
 
     ``random_state`` makes the multi-start search reproducible for tests,
     notebooks, and demonstrations while preserving stochastic defaults.
+    ``initial_weights`` is tried first when provided (a warm start). It does
+    not replace the random restarts. A zero-volatility result has an undefined
+    Sharpe ratio and is reported as NaN rather than 0.
     """
     _validate_returns(returns)
+    if n_starts < 1:
+        raise ValueError("n_starts must be at least 1")
 
     n = returns.shape[1]
     mean_returns = returns.mean().values
     cov_matrix = returns.cov().values
+    if initial_weights is not None:
+        start = np.asarray(initial_weights, dtype=float)
+        if start.shape != (n,) or not np.isfinite(start).all():
+            raise ValueError("initial_weights must be a finite vector, one weight per asset")
+    else:
+        start = None
+
+    # A zero-volatility sample makes the Sharpe ratio undefined. Skip the
+    # solver so SLSQP does not divide by a zero scale inside its gradient.
+    if float(np.max(np.abs(cov_matrix))) <= 1e-18:
+        weights = np.ones(n) / n
+        ann_ret, ann_vol = compute_portfolio_metrics(weights, mean_returns, cov_matrix)
+        return weights, ann_ret, ann_vol, float("nan")
 
     constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
     bounds = ((-1.0, 1.0) if allow_short else (0.0, 1.0),) * n
     rng = np.random.default_rng(random_state)
 
+    starts: list[np.ndarray] = []
+    if start is not None:
+        starts.append(start)
+    for _ in range(n_starts):
+        if allow_short:
+            starts.append(_sample_bounded_short_weights(n, rng))
+        else:
+            starts.append(rng.dirichlet(np.ones(n)))
+
     best_result = None
     best_sharpe = -np.inf
 
-    for _ in range(50):
-        if allow_short:
-            w0 = _sample_bounded_short_weights(n, rng)
-        else:
-            w0 = rng.dirichlet(np.ones(n))
-
+    for w0 in starts:
         result = minimize(
             _neg_sharpe,
             w0,
@@ -161,7 +189,10 @@ def max_sharpe_weights(
         mean_returns,
         cov_matrix,
     )
-    sharpe = (ann_ret - risk_free_rate) / ann_vol if ann_vol > 0 else 0.0
+    if ann_vol > 1e-12:
+        sharpe = (ann_ret - risk_free_rate) / ann_vol
+    else:
+        sharpe = float("nan")
 
     return weights, ann_ret, ann_vol, float(sharpe)
 
@@ -208,7 +239,7 @@ def efficient_frontier(
         results_ret[i] = ret
         results_vol[i] = vol
         results_sharpe[i] = (
-            (ret - risk_free_rate) / vol if vol > 0 else 0.0
+            (ret - risk_free_rate) / vol if vol > 1e-12 else float("nan")
         )
         results_weights[i] = weights
 
@@ -252,3 +283,118 @@ def min_variance_weights(
         cov_matrix,
     )
     return weights, ann_ret, ann_vol
+
+
+def _max_return_weights(
+    returns: pd.DataFrame,
+    allow_short: bool = False,
+) -> tuple[np.ndarray, float, float]:
+    """Highest-return portfolio on the same bounds as the other optimizers."""
+    _validate_returns(returns)
+
+    n = returns.shape[1]
+    mean_returns = returns.mean().to_numpy()
+    cov_matrix = returns.cov().to_numpy()
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = ((-1.0, 1.0) if allow_short else (0.0, 1.0),) * n
+    w0 = np.ones(n) / n
+
+    result = minimize(
+        lambda weights, means: -float(np.dot(weights, means)),
+        w0,
+        args=(mean_returns,),
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"ftol": 1e-12, "maxiter": 1000},
+    )
+    if result.success:
+        weights = result.x
+    elif allow_short:
+        weights = w0
+    else:
+        weights = np.zeros(n)
+        weights[int(np.argmax(mean_returns))] = 1.0
+
+    ann_ret, ann_vol = compute_portfolio_metrics(weights, mean_returns, cov_matrix)
+    return weights, ann_ret, ann_vol
+
+
+def minimum_variance_frontier(
+    returns: pd.DataFrame,
+    n_points: int = 25,
+    allow_short: bool = False,
+) -> dict:
+    """
+    Trace the mean-variance frontier from the global minimum-variance portfolio
+    up to the highest feasible return.
+
+    ``efficient_frontier`` still draws random feasible portfolios. This curve
+    is the set of minimum-variance portfolios for a grid of target returns,
+    which is the efficient frontier on these bounds.
+    """
+    _validate_returns(returns)
+    if n_points < 1:
+        raise ValueError("n_points must be at least 1")
+
+    mean_returns = returns.mean().to_numpy()
+    cov_matrix = returns.cov().to_numpy()
+    n = returns.shape[1]
+    bounds = ((-1.0, 1.0) if allow_short else (0.0, 1.0),) * n
+
+    w_min, ret_min, _ = min_variance_weights(returns, allow_short=allow_short)
+    _, ret_max, _ = _max_return_weights(returns, allow_short=allow_short)
+
+    if n_points == 1 or abs(ret_max - ret_min) < 1e-10:
+        weights = w_min.reshape(1, -1)
+        _, vol_min = compute_portfolio_metrics(w_min, mean_returns, cov_matrix)
+        return {
+            "rets": np.array([ret_min]),
+            "vols": np.array([vol_min]),
+            "weights": weights,
+        }
+
+    targets = np.linspace(ret_min, ret_max, n_points)
+    curve_weights: list[np.ndarray] = []
+    curve_rets: list[float] = []
+    curve_vols: list[float] = []
+
+    for target in targets:
+        constraints = [
+            {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
+            {
+                "type": "eq",
+                "fun": lambda w, level=float(target): (
+                    float(np.dot(w, mean_returns)) * TRADING_DAYS - level
+                ),
+            },
+        ]
+        result = minimize(
+            _portfolio_vol,
+            w_min,
+            args=(mean_returns, cov_matrix),
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"ftol": 1e-12, "maxiter": 1000},
+        )
+        if not result.success or not np.isfinite(result.x).all():
+            continue
+        achieved_ret, achieved_vol = compute_portfolio_metrics(
+            result.x,
+            mean_returns,
+            cov_matrix,
+        )
+        curve_weights.append(np.asarray(result.x, dtype=float))
+        curve_rets.append(achieved_ret)
+        curve_vols.append(achieved_vol)
+
+    if not curve_rets:
+        raise ValueError("Could not trace a minimum-variance frontier for these returns.")
+
+    order = np.argsort(curve_rets)
+    return {
+        "rets": np.asarray(curve_rets, dtype=float)[order],
+        "vols": np.asarray(curve_vols, dtype=float)[order],
+        "weights": np.vstack(curve_weights)[order],
+    }

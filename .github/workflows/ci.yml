@@ -20,20 +20,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pytest ruff
+          python -m pip install pytest==9.1.1 ruff==0.16.9
 
       - name: Check syntax and critical errors
-        run: ruff check app.py src tests --select E9,F63,F7,F82
+        run: ruff check app.py src tests --select E9,F63,F7,F82,F401
 
       - name: Compile Python sources
         run: python -m compileall -q app.py src tests
 
-      - name: Run optimizer regression tests
-        run: python -m pytest -q tests/test_optimizer.py
+      - name: Run tests
+        run: python -m pytest -q tests
