@@ -2,8 +2,8 @@
 AI-Driven Investment Dashboard
 ================================
 A comprehensive Streamlit web application combining portfolio optimization,
-Black-Scholes option pricing, Monte Carlo simulations, and AI-driven
-"what-if" scenario generation.
+Black-Scholes option pricing, Monte Carlo simulations, and Gaussian-mixture
+what-if scenario generation.
 
 ⚠️ DISCLAIMER: For educational/simulation purposes only. Not financial advice.
 Backtest results do not guarantee future performance.
@@ -111,7 +111,7 @@ with st.sidebar:
 st.title("📈 AI-Driven Investment Dashboard")
 st.caption(
     "Portfolio Optimization · Monte Carlo · Black-Scholes · "
-    "AI Scenario Generation  |  ⚠️ Educational use only"
+    "Gaussian-Mixture Scenarios  |  ⚠️ Educational use only"
 )
 
 # Tabs
@@ -120,7 +120,7 @@ tabs = st.tabs([
     "📊 Portfolio Optimizer",
     "🎲 Monte Carlo & Risk",
     "🔮 Options Pricing",
-    "🤖 AI What-If Scenarios",
+    "📉 What-If Scenarios",
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -141,7 +141,7 @@ if not run_btn:
         | **Portfolio Optimizer** | In-sample mean-variance frontier, plus a walk-forward max-Sharpe check against equal weight |
         | **Monte Carlo & Risk** | Seeded paths and VaR/CVaR on the in-sample portfolio (not a forecast) |
         | **Options Pricing** | Black-Scholes call/put prices, Greeks, payoff diagrams |
-        | **AI What-If Scenarios** | GMM-based synthetic return generation, shock scenarios |
+        | **What-If Scenarios** | Gaussian-mixture synthetic returns and shock scenarios |
         """)
     st.stop()
 
@@ -548,10 +548,10 @@ with tabs[3]:
     st.dataframe(greeks_df, width="stretch", hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 4 — AI WHAT-IF SCENARIOS
+#  TAB 4 — GAUSSIAN-MIXTURE WHAT-IF SCENARIOS
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[4]:
-    st.subheader("🤖 AI-Driven What-If Scenario Analysis")
+    st.subheader("What-If Scenario Analysis")
     st.caption(
         "Fits a Gaussian mixture on the full in-sample return series of the "
         "max-Sharpe portfolio, then draws synthetic paths. A positive rate "

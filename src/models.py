@@ -375,7 +375,7 @@ def calmar_ratio(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GMM Scenario Generation (AI Component)
+# Gaussian-mixture scenario generation
 # ─────────────────────────────────────────────────────────────────────────────
 
 def gmm_scenario_returns(
